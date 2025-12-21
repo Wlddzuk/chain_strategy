@@ -1,8 +1,33 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Dark theme - premium trading dashboard */
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  
+  /* Trading colors */
+  --long-green: #00d26a;
+  --long-green-dim: rgba(0, 210, 106, 0.15);
+  --short-red: #ff4757;
+  --short-red-dim: rgba(255, 71, 87, 0.15);
+  
+  /* Zone colors */
+  --demand-zone: rgba(0, 210, 106, 0.2);
+  --demand-zone-border: #00d26a;
+  --supply-zone: rgba(255, 71, 87, 0.2);
+  --supply-zone-border: #ff4757;
+  --event-zone: rgba(128, 128, 128, 0.2);
+  
+  /* UI colors */
+  --card-bg: #141414;
+  --card-border: #262626;
+  --card-hover: #1a1a1a;
+  --accent: #6366f1;
+  --accent-dim: rgba(99, 102, 241, 0.15);
+  --text-muted: #737373;
+  --success: #00d26a;
+  --warning: #f59e0b;
+  --error: #ff4757;
 }
 
 @theme inline {
@@ -12,15 +37,304 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--card-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Card styles */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  background: var(--card-hover);
+}
+
+/* Glass effect */
+.glass {
+  background: rgba(20, 20, 20, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--card-border);
+}
+
+/* Signal card variants */
+.signal-long {
+  border-left: 3px solid var(--long-green);
+  background: linear-gradient(90deg, var(--long-green-dim) 0%, var(--card-bg) 100%);
+}
+
+.signal-short {
+  border-left: 3px solid var(--short-red);
+  background: linear-gradient(90deg, var(--short-red-dim) 0%, var(--card-bg) 100%);
+}
+
+/* Badge styles */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-long {
+  background: var(--long-green-dim);
+  color: var(--long-green);
+}
+
+.badge-short {
+  background: var(--short-red-dim);
+  color: var(--short-red);
+}
+
+.badge-pending {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.badge-divergence {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning);
+}
+
+/* Button styles */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+  outline: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #4f46e5;
+}
+
+.btn-success {
+  background: var(--long-green);
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #00b85c;
+}
+
+.btn-danger {
+  background: var(--short-red);
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #e63e4d;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--foreground);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--card-hover);
+  border-color: var(--text-muted);
+}
+
+/* Input styles */
+.input {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--foreground);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Select styles */
+.select {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--foreground);
+  font-size: 14px;
+  cursor: pointer;
+  outline: none;
+}
+
+.select:focus {
+  border-color: var(--accent);
+}
+
+/* Toggle button group */
+.toggle-group {
+  display: flex;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.toggle-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+}
+
+.toggle-btn.active {
+  background: var(--accent);
+  color: white;
+}
+
+.toggle-btn:hover:not(.active) {
+  color: var(--foreground);
+  background: var(--card-hover);
+}
+
+/* Stat display */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  font-feature-settings: 'tnum';
+}
+
+.stat-value.positive {
+  color: var(--long-green);
+}
+
+.stat-value.negative {
+  color: var(--short-red);
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Live indicator */
+.live-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--long-green);
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Chart container */
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  pointer-events: none;
 }
