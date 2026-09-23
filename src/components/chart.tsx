@@ -10,15 +10,21 @@ import {
     IPaneApi,
     IPriceLine,
     ISeriesApi,
+    ISeriesMarkersPluginApi,
     LineSeries,
     LineStyle,
     MouseEventParams,
+    SeriesMarker,
     Time,
+    WhitespaceData,
+    LineData,
     createChart,
+    createSeriesMarkers,
 } from 'lightweight-charts';
 import {
     Activity,
     BarChart3,
+    ChartCandlestick,
     ChevronsRight,
     Eye,
     EyeOff,
@@ -32,6 +38,8 @@ import {
     Redo2,
     Repeat2,
     RotateCcw,
+    SeparatorHorizontal,
+    Spline,
     Trash2,
     TrendingUp,
     Undo2,
@@ -50,7 +58,11 @@ import {
     type RsiIncrementalState,
 } from '@/lib/chart/indicators';
 import { canUpdateLastCandle } from '@/lib/chart/candle-updates';
-import { Candle, ChainSignal, Zone, getTimeframeMs } from '@/lib/trading/types';
+import { detectEngulfingPatterns, isDecisiveEngulfing } from '@/lib/trading/pattern-detector';
+import { calculateRSI, findTripleDivergences } from '@/lib/trading/rsi-divergence';
+import { Candle, ChainSignal, RsiDivergence, Zone, getTimeframeMs } from '@/lib/trading/types';
+import { findSupersededZoneIds } from '@/lib/trading/zone-marker';
+import { findWickMidpoints, summarizeWickMidpoints, type WickMidpoint } from '@/lib/trading/wick-midpoint';
 import { formatPrice } from '@/lib/ui/format-price';
 import { formatCompactAge } from '@/lib/ui/signal-display';
 import { useTradingStore } from '@/store/trading-store';
@@ -81,6 +93,7 @@ interface Drawing {
 
 interface OverlayInputs {
     zones: Zone[];
+    supersededZoneIds: Set<string>;
     showZones: boolean;
     signal: ChainSignal | null;
     drawings: Drawing[];
@@ -89,6 +102,10 @@ interface OverlayInputs {
     draftAnchor: DrawingPoint | null;
     selectedDrawingId: string | null;
     drawingsVisible: boolean;
+    divergences: RsiDivergence[];
+    showDivergences: boolean;
+    wickLevels: WickMidpoint[];
+    showWickLevels: boolean;
 }
 
 interface DragState {
@@ -102,10 +119,23 @@ const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
 const CHART_ACCENT = '#4d8dff';
 const PRICE_SCALE_WIDTH = 64;
 
+const DIVERGENCE_COLORS = { BULLISH: '#22c55e', BEARISH: '#ef5350' };
+const WICK_COLORS = { BULLISH: '#22d3ee', BEARISH: '#f472b6' };
+// How many of the chart's patterns to draw at once, newest first.
+const MAX_DIVERGENCES_SHOWN = 6;
+const MAX_OPEN_WICKS_SHOWN = 4;
+const MAX_FILLED_WICKS_SHOWN = 6;
+
 const ZONE_COLORS = {
     DEMAND: { fill: 'rgba(0, 210, 106, 0.13)', border: '#00d26a' },
     SUPPLY: { fill: 'rgba(255, 71, 87, 0.13)', border: '#ff4757' },
     EVENT: { fill: 'rgba(148, 163, 184, 0.08)', border: '#64748b' },
+};
+
+// Older zones a newer engulfing has superseded: still drawn, but muted.
+const SUPERSEDED_ZONE_COLORS = {
+    DEMAND: { fill: 'rgba(0, 210, 106, 0.035)', border: 'rgba(0, 210, 106, 0.32)' },
+    SUPPLY: { fill: 'rgba(255, 71, 87, 0.035)', border: 'rgba(255, 71, 87, 0.32)' },
 };
 
 function drawingId(): string {
@@ -114,22 +144,15 @@ function drawingId(): string {
         : `drawing-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function getRelevantZones(zones: Zone[], currentPrice: number): Zone[] {
-    const activeZones = zones.filter((zone) => zone.status === 'ACTIVE');
-    const supply = activeZones
-        .filter((zone) => zone.type === 'SUPPLY' && zone.proximalLine >= currentPrice)
-        .sort((first, second) => first.proximalLine - second.proximalLine)
-        .slice(0, 2);
-    const demand = activeZones
-        .filter((zone) => zone.type === 'DEMAND' && zone.proximalLine <= currentPrice)
-        .sort((first, second) => second.proximalLine - first.proximalLine)
-        .slice(0, 2);
+/** Every live supply/demand zone plus the latest EVENT. */
+function getChartZones(zones: Zone[]): Zone[] {
+    const live = zones.filter((zone) => zone.status === 'ACTIVE' || zone.status === 'TESTED');
     const event = zones
         .filter((zone) => zone.status === 'EVENT')
         .sort((first, second) => second.createdAt - first.createdAt)
         .slice(0, 1);
 
-    return Array.from(new Map([...supply, ...demand, ...event].map((zone) => [zone.id, zone])).values());
+    return Array.from(new Map([...live, ...event].map((zone) => [zone.id, zone])).values());
 }
 
 function calculateEma(candles: Candle[], period: number) {
@@ -191,39 +214,45 @@ function advanceEmaCursor(cursor: EmaCursor, candle: Candle, period: number) {
     return { time, value };
 }
 
-interface DivergencePivot {
-    index: number;
-    value: number;
-    time?: number;
+function divergenceTouches(divergence: RsiDivergence) {
+    return divergence.touches ?? [
+        { index: divergence.pricePoint1.index, time: divergence.pricePoint1.time ?? NaN, price: divergence.pricePoint1.value, rsi: divergence.rsiPoint1.value },
+        { index: divergence.pricePoint2.index, time: divergence.pricePoint2.time ?? NaN, price: divergence.pricePoint2.value, rsi: divergence.rsiPoint2.value },
+    ];
 }
 
-function buildDivergenceLineData(
-    candles: Candle[],
-    first: DivergencePivot,
-    second: DivergencePivot
-) {
-    const firstCandleTime = candles[0]?.time;
-    const lastCandleTime = candles.at(-1)?.time;
-    const points = [first, second]
-        .map((pivot) => {
-            const time = Number.isFinite(pivot.time)
-                ? pivot.time
-                : candles[pivot.index]?.time;
-            if (
-                !Number.isFinite(time) ||
-                !Number.isFinite(pivot.value) ||
-                firstCandleTime === undefined ||
-                lastCandleTime === undefined ||
-                (time as number) < firstCandleTime ||
-                (time as number) > lastCandleTime
-            ) return null;
-            return { time: ((time as number) / 1000) as Time, value: pivot.value };
-        })
-        .filter((point): point is { time: Time; value: number } => point !== null)
-        .sort((firstPoint, secondPoint) => Number(firstPoint.time) - Number(secondPoint.time));
+/**
+ * One RSI line series per direction: each divergence is a run of points, with
+ * a whitespace gap after it so separate patterns are not joined together.
+ * Times must strictly increase, so a touch shared by two patterns is kept once.
+ */
+function buildRsiDivergenceData(candles: Candle[], divergences: RsiDivergence[]) {
+    const firstTime = candles[0]?.time;
+    const lastTime = candles.at(-1)?.time;
+    if (firstTime === undefined || lastTime === undefined) return [];
+    const inRange = (time: number) => Number.isFinite(time) && time >= firstTime && time <= lastTime;
+    const data: Array<LineData<Time> | WhitespaceData<Time>> = [];
+    let lastPlotted = -Infinity;
+    const sorted = [...divergences].sort((a, b) =>
+        (divergenceTouches(a)[0]?.time ?? 0) - (divergenceTouches(b)[0]?.time ?? 0)
+    );
 
-    if (points.length !== 2 || points[0].time === points[1].time) return [];
-    return points;
+    sorted.forEach((divergence, position) => {
+        const touches = divergenceTouches(divergence).filter((touch) => inRange(touch.time));
+        if (touches.length < 2) return;
+        for (const touch of touches) {
+            if (touch.time <= lastPlotted) continue;
+            data.push({ time: (touch.time / 1000) as Time, value: touch.rsi });
+            lastPlotted = touch.time;
+        }
+        const gapTime = candles[touches[touches.length - 1].index + 1]?.time;
+        const nextStart = divergenceTouches(sorted[position + 1] ?? divergence)[0]?.time;
+        if (gapTime !== undefined && gapTime > lastPlotted && (position === sorted.length - 1 || nextStart > gapTime)) {
+            data.push({ time: (gapTime / 1000) as Time });
+            lastPlotted = gapTime;
+        }
+    });
+    return data;
 }
 
 function distanceToSegment(
@@ -346,31 +375,35 @@ function buildOverlayModel(
         const top = Math.min(proximal, distal);
         const zoneHeight = Math.max(1, Math.abs(proximal - distal));
         const idPrefix = options.idPrefix ?? zone.id;
+        // The box starts at the candle that made the zone and extends right.
+        const originX = timeX(zone.createdAt);
+        const left = originX === null ? 0 : Math.max(0, Math.min(originX - 4, plotWidth - 24));
+        const boxWidth = Math.max(0, plotWidth - left);
         model.rects.push({
             id: `${idPrefix}-fill`,
-            x: 0,
+            x: left,
             y: top,
-            width: plotWidth,
+            width: boxWidth,
             height: zoneHeight,
             fill: options.fill,
         });
         if (options.hatch) {
             model.rects.push({
                 id: `${idPrefix}-hatch`,
-                x: 0,
+                x: left,
                 y: top,
-                width: plotWidth,
+                width: boxWidth,
                 height: zoneHeight,
                 fill: 'url(#chart-event-zone-hatch)',
             });
         }
         model.lines.push(
-            { id: `${idPrefix}-top`, x1: 0, y1: top, x2: plotWidth, y2: top, color: options.border, width: options.lineWidth ?? 1 },
-            { id: `${idPrefix}-bottom`, x1: 0, y1: top + zoneHeight, x2: plotWidth, y2: top + zoneHeight, color: options.border, width: options.lineWidth ?? 1 }
+            { id: `${idPrefix}-top`, x1: left, y1: top, x2: plotWidth, y2: top, color: options.border, width: options.lineWidth ?? 1 },
+            { id: `${idPrefix}-bottom`, x1: left, y1: top + zoneHeight, x2: plotWidth, y2: top + zoneHeight, color: options.border, width: options.lineWidth ?? 1 }
         );
         model.texts.push({
             id: `${idPrefix}-label`,
-            x: 8,
+            x: left + 8,
             y: top + 13,
             text: options.label,
             color: options.border,
@@ -383,17 +416,22 @@ function buildOverlayModel(
         const plottedZoneIds = new Set(inputs.signal
             ? [inputs.signal.originZone.id, inputs.signal.eventZone.id]
             : []);
-        for (const zone of inputs.zones) {
+        // Superseded zones first so the current ones draw on top.
+        const ordered = [...inputs.zones].sort((first, second) =>
+            Number(inputs.supersededZoneIds.has(second.id)) - Number(inputs.supersededZoneIds.has(first.id))
+        );
+        for (const zone of ordered) {
             if (plottedZoneIds.has(zone.id)) continue;
+            const superseded = inputs.supersededZoneIds.has(zone.id);
             const colors = zone.status === 'EVENT'
                 ? ZONE_COLORS.EVENT
-                : zone.type === 'SUPPLY'
-                    ? ZONE_COLORS.SUPPLY
-                    : ZONE_COLORS.DEMAND;
+                : superseded
+                    ? SUPERSEDED_ZONE_COLORS[zone.type]
+                    : ZONE_COLORS[zone.type];
             addZone(zone, {
                 fill: colors.fill,
                 border: colors.border,
-                label: zone.status === 'EVENT' ? 'EVENT' : zone.type,
+                label: zone.status === 'EVENT' ? 'EVENT' : superseded ? `old ${zone.type.toLowerCase()}` : zone.type,
             });
         }
     }
@@ -448,6 +486,66 @@ function buildOverlayModel(
                     weight: 700,
                 });
             }
+        }
+    }
+
+    const addDivergence = (id: string, divergence: RsiDivergence) => {
+        const color = DIVERGENCE_COLORS[divergence.type];
+        const points = divergenceTouches(divergence).flatMap((touch) => {
+            const x = timeX(touch.time);
+            const y = priceY(touch.price);
+            return x === null || y === null ? [] : [{ x: x as number, y: y as number }];
+        });
+        if (points.length < 2) return;
+        points.slice(1).forEach((point, step) => {
+            const from = points[step];
+            model.lines.push({ id: `${id}-seg-${step}`, x1: from.x, y1: from.y, x2: point.x, y2: point.y, color, width: 2, dash: '2 4' });
+        });
+        points.forEach((point, step) => model.circles.push({ id: `${id}-touch-${step}`, x: point.x, y: point.y, radius: 3.5, fill: color }));
+        const last = points[points.length - 1];
+        const touches = divergenceTouches(divergence).length;
+        model.texts.push({
+            id: `${id}-label`,
+            x: Math.max(4, Math.min(last.x - 30, plotWidth - 96)),
+            y: divergence.type === 'BULLISH' ? Math.min(last.y + 16, mainPaneHeight - 4) : Math.max(12, last.y - 9),
+            text: `${touches}-touch RSI div`,
+            color,
+            size: 10,
+            weight: 700,
+        });
+    };
+
+    if (inputs.showDivergences) {
+        inputs.divergences.forEach((divergence, position) => addDivergence(`divergence-${position}`, divergence));
+    }
+    if (inputs.signal?.hasRsiDivergence && inputs.signal.divergence) {
+        addDivergence('signal-divergence', inputs.signal.divergence);
+    }
+
+    if (inputs.showWickLevels) {
+        for (const level of inputs.wickLevels) {
+            const color = WICK_COLORS[level.type];
+            const x = timeX(level.time);
+            const y = priceY(level.midpoint);
+            if (x === null || y === null) continue;
+            const id = `wick-${level.type}-${level.time}`;
+            if (level.status === 'OPEN') {
+                model.lines.push({ id, x1: Math.max(0, x), y1: y, x2: plotWidth, y2: y, color, width: 1.5, dash: '6 4' });
+                model.texts.push({
+                    id: `${id}-label`,
+                    x: Math.max(4, plotWidth - 132),
+                    y: level.type === 'BULLISH' ? y + 12 : y - 4,
+                    text: `50% wick · ${formatPrice(level.midpoint)}`,
+                    color,
+                    size: 10,
+                    weight: 700,
+                });
+                continue;
+            }
+            const fillX = level.filledAt === undefined ? null : timeX(level.filledAt);
+            if (fillX === null) continue;
+            model.lines.push({ id, x1: x, y1: y, x2: fillX, y2: y, color, width: 1, dash: '2 3', opacity: 0.6 });
+            model.circles.push({ id: `${id}-fill`, x: fillX, y, radius: 3, fill: color });
         }
     }
 
@@ -558,8 +656,9 @@ export default function Chart({
     const bollingerLowerSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
     const rsiPaneRef = useRef<IPaneApi<Time> | null>(null);
     const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-    const rsiDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-    const priceDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const rsiBullDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const rsiBearDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const engulfingMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
     const rsiStateRef = useRef<RsiIncrementalState | null>(null);
     const ema20Ref = useRef<EmaCursor>(createEmaCursor());
     const ema50Ref = useRef<EmaCursor>(createEmaCursor());
@@ -571,6 +670,7 @@ export default function Chart({
     const drawingsHydratedRef = useRef(false);
     const overlayInputsRef = useRef<OverlayInputs>({
         zones: [],
+        supersededZoneIds: new Set(),
         showZones: false,
         signal: null,
         drawings: [],
@@ -579,6 +679,10 @@ export default function Chart({
         draftAnchor: null,
         selectedDrawingId: null,
         drawingsVisible: true,
+        divergences: [],
+        showDivergences: true,
+        wickLevels: [],
+        showWickLevels: true,
     });
     const storageKey = `chain-trader-drawings:${selectedCoin}:${selectedTimeframe}`;
     const [drawingMode, setDrawingMode] = useState<DrawingMode>('cursor');
@@ -588,6 +692,9 @@ export default function Chart({
     const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
     const [drawingsVisible, setDrawingsVisible] = useState(true);
     const [showAutoFib, setShowAutoFib] = useState(false);
+    const [showEngulfing, setShowEngulfing] = useState(true);
+    const [showDivergences, setShowDivergences] = useState(true);
+    const [showWickLevels, setShowWickLevels] = useState(true);
     const [showVolume, setShowVolume] = useState(true);
     const [showEma20, setShowEma20] = useState(false);
     const [showEma50, setShowEma50] = useState(false);
@@ -611,8 +718,32 @@ export default function Chart({
     const latestCandle = candles[candles.length - 1];
     const currentPrice = latestCandle?.close || 0;
     const firstCandleTime = candles[0]?.time ?? null;
-    const relevantZones = useMemo(() => getRelevantZones(zones, currentPrice), [currentPrice, zones]);
+    const chartZones = useMemo(() => getChartZones(zones), [zones]);
+    const supersededZoneIds = useMemo(() => findSupersededZoneIds(chartZones), [chartZones]);
     const autoFib = useMemo(() => getAutoFibAnchors(candles), [candles]);
+    // Decisive engulfing structures from closed candles. Per the Chain Strategy
+    // PDF the zone is the candle that got swallowed — the last red candle
+    // before a bullish engulfing, the last green candle before a bearish one —
+    // so that is the candle that gets the marker.
+    const engulfingMarkers = useMemo<SeriesMarker<Time>[]>(() => {
+        const closed = candles.slice(0, -1);
+        return detectEngulfingPatterns(closed).filter((pattern) => isDecisiveEngulfing(closed, pattern)).map((pattern) => pattern.type === 'BULLISH'
+            ? { time: (pattern.engulfedCandle.time / 1000) as Time, position: 'belowBar', shape: 'arrowUp', color: '#00d26a', text: 'E' }
+            : { time: (pattern.engulfedCandle.time / 1000) as Time, position: 'aboveBar', shape: 'arrowDown', color: '#ff4757', text: 'E' });
+    }, [candles]);
+    const tripleDivergences = useMemo(
+        () => findTripleDivergences(candles, calculateRSI(candles.map((candle) => candle.close))).slice(-MAX_DIVERGENCES_SHOWN),
+        [candles]
+    );
+    const wickMidpoints = useMemo(() => findWickMidpoints(candles), [candles]);
+    const wickRecord = useMemo(() => summarizeWickMidpoints(wickMidpoints), [wickMidpoints]);
+    const shownWickLevels = useMemo(() => [
+        ...wickMidpoints
+            .filter((level) => level.status === 'OPEN')
+            .sort((first, second) => Math.abs(first.midpoint - currentPrice) - Math.abs(second.midpoint - currentPrice))
+            .slice(0, MAX_OPEN_WICKS_SHOWN),
+        ...wickMidpoints.filter((level) => level.status === 'FILLED').slice(-MAX_FILLED_WICKS_SHOWN),
+    ], [currentPrice, wickMidpoints]);
     const displayCandle = hoverCandle || latestCandle;
     const candleChange = displayCandle
         ? displayCandle.open === 0 ? 0 : ((displayCandle.close - displayCandle.open) / displayCandle.open) * 100
@@ -804,6 +935,7 @@ export default function Chart({
         chart.priceScale('volume').applyOptions({
             scaleMargins: { top: 0.82, bottom: 0 },
         });
+        engulfingMarkersRef.current = createSeriesMarkers(series, []);
 
         chartRef.current = chart;
         seriesRef.current = series;
@@ -847,6 +979,8 @@ export default function Chart({
             chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleOverlay);
             chart.unsubscribeCrosshairMove(handleCrosshairMove);
             if (overlayFrameRef.current !== null) cancelAnimationFrame(overlayFrameRef.current);
+            // Clear it too, or a remounted chart (React dev double-mount) never redraws the overlay.
+            overlayFrameRef.current = null;
             signalPriceLinesRef.current.forEach((line) => series.removePriceLine(line));
             signalPriceLinesRef.current = [];
             chart.remove();
@@ -860,11 +994,16 @@ export default function Chart({
             bollingerLowerSeriesRef.current = null;
             rsiPaneRef.current = null;
             rsiSeriesRef.current = null;
-            rsiDivergenceSeriesRef.current = null;
-            priceDivergenceSeriesRef.current = null;
+            rsiBullDivergenceSeriesRef.current = null;
+            rsiBearDivergenceSeriesRef.current = null;
+            engulfingMarkersRef.current = null;
             rsiStateRef.current = null;
         };
     }, [scheduleOverlay]);
+
+    useEffect(() => {
+        engulfingMarkersRef.current?.setMarkers(showEngulfing ? engulfingMarkers : []);
+    }, [engulfingMarkers, showEngulfing]);
 
     useEffect(() => {
         volumeSeriesRef.current?.applyOptions({ visible: showVolume });
@@ -947,8 +1086,7 @@ export default function Chart({
             axisLabelVisible: true,
             title: '30',
         });
-        const rsiDivergenceSeries = pane.addSeries(LineSeries, {
-            color: '#22c55e',
+        const divergenceSeriesOptions = {
             lineWidth: 2,
             lineStyle: LineStyle.Dotted,
             pointMarkersVisible: true,
@@ -956,17 +1094,9 @@ export default function Chart({
             priceLineVisible: false,
             lastValueVisible: false,
             crosshairMarkerVisible: false,
-        });
-        const priceDivergenceSeries = chart.addSeries(LineSeries, {
-            color: '#22c55e',
-            lineWidth: 2,
-            lineStyle: LineStyle.Dotted,
-            pointMarkersVisible: true,
-            pointMarkersRadius: 4,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-        });
+        } as const;
+        const rsiBullDivergenceSeries = pane.addSeries(LineSeries, { ...divergenceSeriesOptions, color: DIVERGENCE_COLORS.BULLISH });
+        const rsiBearDivergenceSeries = pane.addSeries(LineSeries, { ...divergenceSeriesOptions, color: DIVERGENCE_COLORS.BEARISH });
 
         pane.priceScale('right').applyOptions({
             autoScale: true,
@@ -982,53 +1112,42 @@ export default function Chart({
         rsiStateRef.current = seeded.state;
         rsiPaneRef.current = pane;
         rsiSeriesRef.current = rsiSeries;
-        rsiDivergenceSeriesRef.current = rsiDivergenceSeries;
-        priceDivergenceSeriesRef.current = priceDivergenceSeries;
+        rsiBullDivergenceSeriesRef.current = rsiBullDivergenceSeries;
+        rsiBearDivergenceSeriesRef.current = rsiBearDivergenceSeries;
         scheduleOverlay();
 
         return () => {
             if (chartRef.current === chart) {
                 const paneIndex = pane.paneIndex();
-                chart.removeSeries(priceDivergenceSeries);
-                chart.removeSeries(rsiDivergenceSeries);
+                chart.removeSeries(rsiBearDivergenceSeries);
+                chart.removeSeries(rsiBullDivergenceSeries);
                 chart.removeSeries(rsiSeries);
                 chart.removePane(paneIndex);
                 scheduleOverlay();
             }
             rsiPaneRef.current = null;
             rsiSeriesRef.current = null;
-            rsiDivergenceSeriesRef.current = null;
-            priceDivergenceSeriesRef.current = null;
+            rsiBullDivergenceSeriesRef.current = null;
+            rsiBearDivergenceSeriesRef.current = null;
             rsiStateRef.current = null;
         };
     }, [scheduleOverlay, showRsi]);
 
     useEffect(() => {
-        const priceDivergenceSeries = priceDivergenceSeriesRef.current;
-        const rsiDivergenceSeries = rsiDivergenceSeriesRef.current;
-        if (!showRsi || !priceDivergenceSeries || !rsiDivergenceSeries) return;
+        const bullSeries = rsiBullDivergenceSeriesRef.current;
+        const bearSeries = rsiBearDivergenceSeriesRef.current;
+        if (!showRsi || !bullSeries || !bearSeries) return;
 
-        const divergence = signalToPlot?.divergence;
-        if (!signalToPlot?.hasRsiDivergence || !divergence) {
-            priceDivergenceSeries.setData([]);
-            rsiDivergenceSeries.setData([]);
-            return;
+        const shown = showDivergences ? [...tripleDivergences] : [];
+        const signalDivergence = signalToPlot?.hasRsiDivergence ? signalToPlot.divergence : undefined;
+        if (signalDivergence && !shown.some((divergence) =>
+            divergence.type === signalDivergence.type && divergence.pricePoint2.time === signalDivergence.pricePoint2.time
+        )) {
+            shown.push(signalDivergence);
         }
-
-        const color = divergence.type === 'BULLISH' ? '#22c55e' : '#ef5350';
-        priceDivergenceSeries.applyOptions({ color });
-        rsiDivergenceSeries.applyOptions({ color });
-        priceDivergenceSeries.setData(buildDivergenceLineData(
-            candlesRef.current,
-            divergence.pricePoint1,
-            divergence.pricePoint2
-        ));
-        rsiDivergenceSeries.setData(buildDivergenceLineData(
-            candlesRef.current,
-            divergence.rsiPoint1,
-            divergence.rsiPoint2
-        ));
-    }, [firstCandleTime, showRsi, signalToPlot]);
+        bullSeries.setData(buildRsiDivergenceData(candlesRef.current, shown.filter((divergence) => divergence.type === 'BULLISH')));
+        bearSeries.setData(buildRsiDivergenceData(candlesRef.current, shown.filter((divergence) => divergence.type === 'BEARISH')));
+    }, [firstCandleTime, showDivergences, showRsi, signalToPlot, tripleDivergences]);
 
     useEffect(() => {
         const chart = chartRef.current;
@@ -1289,7 +1408,8 @@ export default function Chart({
 
     useEffect(() => {
         overlayInputsRef.current = {
-            zones: relevantZones,
+            zones: chartZones,
+            supersededZoneIds,
             showZones,
             signal: signalToPlot,
             drawings,
@@ -1298,9 +1418,13 @@ export default function Chart({
             draftAnchor,
             selectedDrawingId,
             drawingsVisible,
+            divergences: tripleDivergences,
+            showDivergences,
+            wickLevels: shownWickLevels,
+            showWickLevels,
         };
         scheduleOverlay();
-    }, [autoFib, draftAnchor, drawings, drawingsVisible, relevantZones, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay]);
+    }, [autoFib, draftAnchor, drawings, drawingsVisible, chartZones, supersededZoneIds, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay, tripleDivergences, showDivergences, shownWickLevels, showWickLevels]);
 
     const setMode = (mode: DrawingMode) => {
         drawingModeRef.current = mode;
@@ -1498,13 +1622,39 @@ export default function Chart({
     const handleToggleZones = () => {
         const nextVisible = !showZones;
         toggleZones();
+        const liveCount = chartZones.filter((zone) => zone.status !== 'EVENT').length;
         setToolMessage(
             nextVisible
-                ? relevantZones.length > 0
-                    ? `${relevantZones.length} active supply/demand zone${relevantZones.length === 1 ? '' : 's'} shown.`
-                    : 'Zones are on, but this scan has no active nearby supply or demand zones.'
+                ? liveCount > 0
+                    ? `${liveCount} live supply/demand zone${liveCount === 1 ? '' : 's'} shown — the newest demand and supply are bright; ${supersededZoneIds.size} older one${supersededZoneIds.size === 1 ? '' : 's'} a newer engulfing replaced ${supersededZoneIds.size === 1 ? 'is' : 'are'} faded.`
+                    : 'Zones are on, but this scan has no live supply or demand zones.'
                 : 'Supply and demand zones hidden.'
         );
+    };
+
+    const toggleEngulfing = () => {
+        const next = !showEngulfing;
+        setShowEngulfing(next);
+        setToolMessage(next
+            ? 'Engulfing shown — the E marks the swallowed candle: green arrow under the last red candle = demand, red arrow over the last green candle = supply.'
+            : 'Engulfing markers hidden.');
+    };
+
+    const toggleDivergences = () => {
+        const next = !showDivergences;
+        setShowDivergences(next);
+        setToolMessage(next
+            ? `${tripleDivergences.length} three-touch RSI divergence${tripleDivergences.length === 1 ? '' : 's'} on this chart — lower lows (or higher highs) while RSI stays level. Turn on RSI to see the RSI side.`
+            : 'Three-touch divergences hidden.');
+    };
+
+    const toggleWickLevels = () => {
+        const next = !showWickLevels;
+        setShowWickLevels(next);
+        setToolMessage(next
+            ? `50% wick levels shown. On this chart ${wickRecord.filled} of ${wickRecord.total} long wicks came back to half` +
+                (wickRecord.decided ? `, and ${wickRecord.held} of ${wickRecord.decided} then held the wick's tip.` : '.')
+            : '50% wick levels hidden.');
     };
 
     const undoDrawing = () => {
@@ -1616,6 +1766,9 @@ export default function Chart({
                             <div className="my-1 h-px w-7 bg-[#2a2e39]" />
                             <ToolButton label="Auto Fibonacci" active={showAutoFib} onClick={toggleAutoFib}><Activity size={18} /></ToolButton>
                             <ToolButton label="Supply and demand zones" active={showZones} onClick={handleToggleZones}><Layers3 size={18} /></ToolButton>
+                            <ToolButton label="Engulfing candles" active={showEngulfing} onClick={toggleEngulfing}><ChartCandlestick size={18} /></ToolButton>
+                            <ToolButton label="Three-touch RSI divergence" active={showDivergences} onClick={toggleDivergences}><Spline size={18} /></ToolButton>
+                            <ToolButton label="50% wick levels" active={showWickLevels} onClick={toggleWickLevels}><SeparatorHorizontal size={18} /></ToolButton>
                             <ToolButton label="Magnet mode (M)" active={magnetEnabled} onClick={toggleMagnet}><Magnet size={18} /></ToolButton>
                             <ToolButton label="Keep drawing" active={keepDrawing} onClick={toggleKeepDrawing}><Repeat2 size={18} /></ToolButton>
                             <ToolButton
@@ -1699,7 +1852,10 @@ export default function Chart({
                                 </span>
                             </div>
                         ) : (
-                            <div className="hidden items-center gap-3 text-[#5d606b] md:flex">
+                            <div className="hidden items-center gap-3 text-[#5d606b] md:flex" data-testid="chart-rule-legend">
+                                <span><b className="text-[#00d26a]">E</b> engulfing (swallowed candle)</span>
+                                <span><b className="text-[#22c55e]">···</b> 3-touch RSI div</span>
+                                <span><b className="text-[#22d3ee]">- -</b> 50% wick</span>
                                 <span>T/H/B draw</span><span>M magnet</span><span>R reset</span><span>G realtime</span><span>+/- zoom</span>
                             </div>
                         )}

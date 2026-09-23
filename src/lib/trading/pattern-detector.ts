@@ -72,6 +72,26 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
 }
 
 /**
+ * Engulfing the way he marks it by eye: the engulfing body is visibly bigger —
+ * at least `minBodyRatio` times the swallowed candle's body and no smaller than
+ * the average body of the previous `averageBars` candles. Filters out the small
+ * engulfings that `detectEngulfingPatterns` also reports.
+ */
+export function isDecisiveEngulfing(
+    candles: Candle[],
+    pattern: EngulfingPattern,
+    minBodyRatio: number = 1.5,
+    averageBars: number = 20
+): boolean {
+    const engulfingBody = getCandleBody(pattern.engulfingCandle);
+    if (engulfingBody < getCandleBody(pattern.engulfedCandle) * minBodyRatio) return false;
+    const previous = candles.slice(Math.max(0, pattern.index - averageBars), pattern.index);
+    if (!previous.length) return true;
+    const averageBody = previous.reduce((sum, candle) => sum + getCandleBody(candle), 0) / previous.length;
+    return engulfingBody >= averageBody;
+}
+
+/**
  * Detects pin bar patterns
  * Pin bar: Small body with long wick (tail) indicating rejection
  * Larger tail/wick = stronger zone

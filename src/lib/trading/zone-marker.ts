@@ -207,3 +207,21 @@ export function updateZoneStatus(zone: Zone, candles: Candle[]): Zone {
 
     return zone;
 }
+
+/**
+ * Newer structure wins. Among the live (ACTIVE or TESTED) zones of one type,
+ * the most recent is the one price should respect next; every older zone of
+ * that type is superseded. Superseded zones are kept — price can still reach
+ * them — they just stop being the main zone. Supply and demand are ranked
+ * separately.
+ */
+export function findSupersededZoneIds(zones: Zone[]): Set<string> {
+    const superseded = new Set<string>();
+    for (const type of ['DEMAND', 'SUPPLY'] as const) {
+        const live = zones.filter((zone) => zone.type === type && (zone.status === 'ACTIVE' || zone.status === 'TESTED'));
+        if (live.length < 2) continue;
+        const newest = live.reduce((latest, zone) => (zone.createdAt > latest.createdAt ? zone : latest));
+        for (const zone of live) if (zone.id !== newest.id) superseded.add(zone.id);
+    }
+    return superseded;
+}

@@ -98,6 +98,9 @@ export interface RsiDivergence {
   rsiPoint1: { index: number; value: number; time?: number };
   rsiPoint2: { index: number; value: number; time?: number };
   strength: number; // 0-100
+  // Every touch of a three-touch divergence, oldest first. Signals saved
+  // before three-touch detection only carry the two end points.
+  touches?: Array<{ index: number; time: number; price: number; rsi: number }>;
 }
 
 export interface TradeParams {
