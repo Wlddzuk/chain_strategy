@@ -6,8 +6,11 @@ import {
     Zone,
     EngulfingPattern,
     getCandleDirection,
-    generateId,
 } from './types';
+
+function buildZoneId(type: Zone['type'], candle: Candle): string {
+    return `zone-${type.toLowerCase()}-${candle.time}`;
+}
 
 /**
  * Mark a Demand Zone (Buy Zone)
@@ -39,7 +42,7 @@ export function markDemandZone(
     const distalLine = referenceCandle.low;
 
     return {
-        id: generateId(),
+        id: buildZoneId('DEMAND', referenceCandle),
         type: 'DEMAND',
         proximalLine,
         distalLine,
@@ -80,7 +83,7 @@ export function markSupplyZone(
     const distalLine = referenceCandle.high;
 
     return {
-        id: generateId(),
+        id: buildZoneId('SUPPLY', referenceCandle),
         type: 'SUPPLY',
         proximalLine,
         distalLine,
@@ -105,10 +108,11 @@ export function createZoneFromEngulfing(
         // Demand zone from the bearish candle that got engulfed
         const refCandle = pattern.engulfedCandle;
         return {
-            id: generateId(),
+            id: buildZoneId('DEMAND', refCandle),
             type: 'DEMAND',
             proximalLine: Math.max(refCandle.open, refCandle.close),
-            distalLine: refCandle.low,
+            // Use the lowest wick in the engulfing structure.
+            distalLine: Math.min(refCandle.low, pattern.engulfingCandle.low),
             createdAt: refCandle.time,
             createdAtIndex: pattern.index - 1,
             status: 'ACTIVE',
@@ -119,10 +123,11 @@ export function createZoneFromEngulfing(
         // Supply zone from the bullish candle that got engulfed
         const refCandle = pattern.engulfedCandle;
         return {
-            id: generateId(),
+            id: buildZoneId('SUPPLY', refCandle),
             type: 'SUPPLY',
             proximalLine: Math.min(refCandle.open, refCandle.close),
-            distalLine: refCandle.high,
+            // Use the highest wick in the engulfing structure.
+            distalLine: Math.max(refCandle.high, pattern.engulfingCandle.high),
             createdAt: refCandle.time,
             createdAtIndex: pattern.index - 1,
             status: 'ACTIVE',

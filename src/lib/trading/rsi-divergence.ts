@@ -3,6 +3,127 @@
 
 import { Candle, RsiDivergence } from './types';
 
+export interface RsiAccumulatorState {
+    period: number;
+    previousClose: number | null;
+    changeCount: number;
+    seedGain: number;
+    seedLoss: number;
+    averageGain: number | null;
+    averageLoss: number | null;
+}
+
+export interface RsiAccumulatorStep {
+    state: RsiAccumulatorState;
+    value: number;
+}
+
+function assertValidPeriod(period: number): void {
+    if (!Number.isInteger(period) || period < 1) {
+        throw new RangeError('RSI period must be a positive integer');
+    }
+}
+
+function calculateRsiValue(averageGain: number, averageLoss: number): number {
+    if (averageLoss === 0) return 100;
+    const relativeStrength = averageGain / averageLoss;
+    return 100 - (100 / (1 + relativeStrength));
+}
+
+/**
+ * Create the serializable smoothing state used by Wilder's RSI calculation.
+ * `advanceRsiAccumulator` is pure, so a caller can retain a previous closed-bar
+ * state and safely recompute a changing, still-forming bar from that state.
+ */
+export function createRsiAccumulator(period: number = 14): RsiAccumulatorState {
+    assertValidPeriod(period);
+    return {
+        period,
+        previousClose: null,
+        changeCount: 0,
+        seedGain: 0,
+        seedLoss: 0,
+        averageGain: null,
+        averageLoss: null,
+    };
+}
+
+/** Advance an RSI smoothing state by one close without mutating the input. */
+export function advanceRsiAccumulator(
+    state: RsiAccumulatorState,
+    close: number
+): RsiAccumulatorStep {
+    if (state.previousClose === null) {
+        return {
+            state: { ...state, previousClose: close },
+            value: NaN,
+        };
+    }
+
+    const change = close - state.previousClose;
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+    const changeCount = state.changeCount + 1;
+
+    if (changeCount < state.period) {
+        return {
+            state: {
+                ...state,
+                previousClose: close,
+                changeCount,
+                seedGain: state.seedGain + gain,
+                seedLoss: state.seedLoss + loss,
+            },
+            value: NaN,
+        };
+    }
+
+    if (changeCount === state.period) {
+        const averageGain = (state.seedGain + gain) / state.period;
+        const averageLoss = (state.seedLoss + loss) / state.period;
+        return {
+            state: {
+                ...state,
+                previousClose: close,
+                changeCount,
+                seedGain: 0,
+                seedLoss: 0,
+                averageGain,
+                averageLoss,
+            },
+            value: calculateRsiValue(averageGain, averageLoss),
+        };
+    }
+
+    const previousAverageGain = state.averageGain ?? 0;
+    const previousAverageLoss = state.averageLoss ?? 0;
+    const averageGain = ((previousAverageGain * (state.period - 1)) + gain) / state.period;
+    const averageLoss = ((previousAverageLoss * (state.period - 1)) + loss) / state.period;
+
+    return {
+        state: {
+            ...state,
+            previousClose: close,
+            changeCount,
+            averageGain,
+            averageLoss,
+        },
+        value: calculateRsiValue(averageGain, averageLoss),
+    };
+}
+
+/** Build the smoothing state after consuming every supplied close. */
+export function buildRsiAccumulator(
+    closes: readonly number[],
+    period: number = 14
+): RsiAccumulatorState {
+    let state = createRsiAccumulator(period);
+    for (const close of closes) {
+        state = advanceRsiAccumulator(state, close).state;
+    }
+    return state;
+}
+
 /**
  * Calculate RSI (Relative Strength Index)
  * @param closes - Array of closing prices
@@ -12,43 +133,11 @@ import { Candle, RsiDivergence } from './types';
 export function calculateRSI(closes: number[], period: number = 14): number[] {
     const rsi: number[] = new Array(closes.length).fill(NaN);
 
-    if (closes.length < period + 1) {
-        return rsi;
-    }
-
-    // Calculate price changes
-    const changes: number[] = [];
-    for (let i = 1; i < closes.length; i++) {
-        changes.push(closes[i] - closes[i - 1]);
-    }
-
-    // Separate gains and losses
-    const gains = changes.map(c => (c > 0 ? c : 0));
-    const losses = changes.map(c => (c < 0 ? Math.abs(c) : 0));
-
-    // Calculate initial average gain/loss (simple average for first period)
-    let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
-
-    // Calculate first RSI value
-    if (avgLoss === 0) {
-        rsi[period] = 100;
-    } else {
-        const rs = avgGain / avgLoss;
-        rsi[period] = 100 - (100 / (1 + rs));
-    }
-
-    // Calculate subsequent RSI values using smoothed moving average
-    for (let i = period; i < changes.length; i++) {
-        avgGain = (avgGain * (period - 1) + gains[i]) / period;
-        avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-
-        if (avgLoss === 0) {
-            rsi[i + 1] = 100;
-        } else {
-            const rs = avgGain / avgLoss;
-            rsi[i + 1] = 100 - (100 / (1 + rs));
-        }
+    let state = createRsiAccumulator(period);
+    for (let index = 0; index < closes.length; index++) {
+        const step = advanceRsiAccumulator(state, closes[index]);
+        state = step.state;
+        rsi[index] = step.value;
     }
 
     return rsi;
@@ -137,13 +226,17 @@ export function detectBullishDivergence(
     // Bullish divergence: Price LL, RSI HL
     if (priceLow2.value < priceLow1.value && rsiLow2.value > rsiLow1.value) {
         const strength = Math.min(100, Math.abs(rsiLow2.value - rsiLow1.value) * 2);
+        const priceIndex1 = priceLow1.index + startIdx;
+        const priceIndex2 = priceLow2.index + startIdx;
+        const rsiIndex1 = rsiLow1.index + startIdx;
+        const rsiIndex2 = rsiLow2.index + startIdx;
 
         return {
             type: 'BULLISH',
-            pricePoint1: { index: priceLow1.index + startIdx, value: priceLow1.value },
-            pricePoint2: { index: priceLow2.index + startIdx, value: priceLow2.value },
-            rsiPoint1: { index: rsiLow1.index + startIdx, value: rsiLow1.value },
-            rsiPoint2: { index: rsiLow2.index + startIdx, value: rsiLow2.value },
+            pricePoint1: { index: priceIndex1, value: priceLow1.value, time: candles[priceIndex1]?.time },
+            pricePoint2: { index: priceIndex2, value: priceLow2.value, time: candles[priceIndex2]?.time },
+            rsiPoint1: { index: rsiIndex1, value: rsiLow1.value, time: candles[rsiIndex1]?.time },
+            rsiPoint2: { index: rsiIndex2, value: rsiLow2.value, time: candles[rsiIndex2]?.time },
             strength,
         };
     }
@@ -184,13 +277,17 @@ export function detectBearishDivergence(
     // Bearish divergence: Price HH, RSI LH
     if (priceHigh2.value > priceHigh1.value && rsiHigh2.value < rsiHigh1.value) {
         const strength = Math.min(100, Math.abs(rsiHigh1.value - rsiHigh2.value) * 2);
+        const priceIndex1 = priceHigh1.index + startIdx;
+        const priceIndex2 = priceHigh2.index + startIdx;
+        const rsiIndex1 = rsiHigh1.index + startIdx;
+        const rsiIndex2 = rsiHigh2.index + startIdx;
 
         return {
             type: 'BEARISH',
-            pricePoint1: { index: priceHigh1.index + startIdx, value: priceHigh1.value },
-            pricePoint2: { index: priceHigh2.index + startIdx, value: priceHigh2.value },
-            rsiPoint1: { index: rsiHigh1.index + startIdx, value: rsiHigh1.value },
-            rsiPoint2: { index: rsiHigh2.index + startIdx, value: rsiHigh2.value },
+            pricePoint1: { index: priceIndex1, value: priceHigh1.value, time: candles[priceIndex1]?.time },
+            pricePoint2: { index: priceIndex2, value: priceHigh2.value, time: candles[priceIndex2]?.time },
+            rsiPoint1: { index: rsiIndex1, value: rsiHigh1.value, time: candles[rsiIndex1]?.time },
+            rsiPoint2: { index: rsiIndex2, value: rsiHigh2.value, time: candles[rsiIndex2]?.time },
             strength,
         };
     }

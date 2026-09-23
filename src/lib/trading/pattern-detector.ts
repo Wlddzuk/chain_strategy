@@ -37,9 +37,15 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
         const previousBodyTop = Math.max(previous.open, previous.close);
         const previousBodyBottom = Math.min(previous.open, previous.close);
 
-        // Check for bullish engulfing: green candle engulfs red
+        const currentBody = getCandleBody(current);
+        const previousBody = getCandleBody(previous);
+        const bodyEngulfs = currentBodyTop >= previousBodyTop && currentBodyBottom <= previousBodyBottom;
+        const rangeEngulfs = current.high >= previous.high && current.low <= previous.low;
+        const isBiggerBody = currentBody > previousBody;
+
+        // Check for bullish engulfing: green candle after red and bigger
         if (currentDir === 'BULLISH' && previousDir === 'BEARISH') {
-            if (currentBodyTop > previousBodyTop && currentBodyBottom < previousBodyBottom) {
+            if ((bodyEngulfs || rangeEngulfs) && isBiggerBody) {
                 patterns.push({
                     type: 'BULLISH',
                     index: i,
@@ -49,9 +55,9 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
             }
         }
 
-        // Check for bearish engulfing: red candle engulfs green
+        // Check for bearish engulfing: red candle after green and bigger
         if (currentDir === 'BEARISH' && previousDir === 'BULLISH') {
-            if (currentBodyTop > previousBodyTop && currentBodyBottom < previousBodyBottom) {
+            if ((bodyEngulfs || rangeEngulfs) && isBiggerBody) {
                 patterns.push({
                     type: 'BEARISH',
                     index: i,
@@ -142,7 +148,6 @@ export function classifyFormation(
     const preMoveDirection = preBaseCandle.close > preBaseCandle.open ? 'RALLY' : 'DROP';
 
     // Get the move after the base
-    const lastBaseCandle = candles[baseEndIndex];
     const postBaseCandle = candles[baseEndIndex + 1];
     const postMoveDirection = postBaseCandle.close > postBaseCandle.open ? 'RALLY' : 'DROP';
 
@@ -181,7 +186,7 @@ export function identifyBase(candles: Candle[], startIndex: number): { start: nu
     const avgRange = candles.slice(Math.max(0, startIndex - 10), startIndex)
         .reduce((sum, c) => sum + getCandleRange(c), 0) / Math.min(10, startIndex);
 
-    let baseStart = startIndex;
+    const baseStart = startIndex;
     let baseEnd = startIndex;
 
     // Extend base while candles are small (less than 50% of average range)

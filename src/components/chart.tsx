@@ -1,70 +1,750 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, CandlestickSeries } from 'lightweight-charts';
-import { Candle, Zone } from '@/lib/trading/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    type AutoscaleInfoProvider,
+    CandlestickData,
+    CandlestickSeries,
+    HistogramSeries,
+    IChartApi,
+    IPaneApi,
+    IPriceLine,
+    ISeriesApi,
+    LineSeries,
+    LineStyle,
+    MouseEventParams,
+    Time,
+    createChart,
+} from 'lightweight-charts';
+import {
+    Activity,
+    BarChart3,
+    ChevronsRight,
+    Eye,
+    EyeOff,
+    GalleryVerticalEnd,
+    Layers3,
+    Magnet,
+    Maximize2,
+    Minimize2,
+    Minus,
+    MousePointer2,
+    Redo2,
+    Repeat2,
+    RotateCcw,
+    Trash2,
+    TrendingUp,
+    Undo2,
+    ZoomIn,
+    ZoomOut,
+} from 'lucide-react';
+import ChartOverlaySvg, {
+    type OverlayHandle,
+    type OverlayModel,
+} from '@/components/chart-overlay-svg';
+import {
+    calculateBollingerBands,
+    calculateBollingerLastPoint,
+    calculateRsiSeries,
+    updateRsiLastPoint,
+    type RsiIncrementalState,
+} from '@/lib/chart/indicators';
+import { canUpdateLastCandle } from '@/lib/chart/candle-updates';
+import { Candle, ChainSignal, Zone, getTimeframeMs } from '@/lib/trading/types';
+import { formatPrice } from '@/lib/ui/format-price';
+import { formatCompactAge } from '@/lib/ui/signal-display';
+import { useTradingStore } from '@/store/trading-store';
 
 interface ChartProps {
     candles: Candle[];
     zones?: Zone[];
     isLoading?: boolean;
+    showRsi: boolean;
+    showBollinger: boolean;
+    onToggleRsi: () => void;
+    onToggleBollinger: () => void;
 }
 
-export default function Chart({ candles, zones = [], isLoading }: ChartProps) {
+type DrawingMode = 'cursor' | 'trend' | 'horizontal' | 'fibonacci';
+
+interface DrawingPoint {
+    time: number;
+    price: number;
+}
+
+interface Drawing {
+    id: string;
+    type: Exclude<DrawingMode, 'cursor'>;
+    start: DrawingPoint;
+    end?: DrawingPoint;
+}
+
+interface OverlayInputs {
+    zones: Zone[];
+    showZones: boolean;
+    signal: ChainSignal | null;
+    drawings: Drawing[];
+    showAutoFib: boolean;
+    autoFib: { start: DrawingPoint; end: DrawingPoint } | null;
+    draftAnchor: DrawingPoint | null;
+    selectedDrawingId: string | null;
+    drawingsVisible: boolean;
+}
+
+interface DragState {
+    id: string;
+    origin: Drawing;
+    start: DrawingPoint;
+    pointerId: number;
+}
+
+const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
+const CHART_ACCENT = '#4d8dff';
+const PRICE_SCALE_WIDTH = 64;
+
+const ZONE_COLORS = {
+    DEMAND: { fill: 'rgba(0, 210, 106, 0.13)', border: '#00d26a' },
+    SUPPLY: { fill: 'rgba(255, 71, 87, 0.13)', border: '#ff4757' },
+    EVENT: { fill: 'rgba(148, 163, 184, 0.08)', border: '#64748b' },
+};
+
+function drawingId(): string {
+    return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `drawing-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getRelevantZones(zones: Zone[], currentPrice: number): Zone[] {
+    const activeZones = zones.filter((zone) => zone.status === 'ACTIVE');
+    const supply = activeZones
+        .filter((zone) => zone.type === 'SUPPLY' && zone.proximalLine >= currentPrice)
+        .sort((first, second) => first.proximalLine - second.proximalLine)
+        .slice(0, 2);
+    const demand = activeZones
+        .filter((zone) => zone.type === 'DEMAND' && zone.proximalLine <= currentPrice)
+        .sort((first, second) => second.proximalLine - first.proximalLine)
+        .slice(0, 2);
+    const event = zones
+        .filter((zone) => zone.status === 'EVENT')
+        .sort((first, second) => second.createdAt - first.createdAt)
+        .slice(0, 1);
+
+    return Array.from(new Map([...supply, ...demand, ...event].map((zone) => [zone.id, zone])).values());
+}
+
+function calculateEma(candles: Candle[], period: number) {
+    if (candles.length === 0) return [];
+    const multiplier = 2 / (period + 1);
+    let ema = candles[0].close;
+
+    return candles.map((candle, index) => {
+        ema = index === 0 ? candle.close : ((candle.close - ema) * multiplier) + ema;
+        return { time: (candle.time / 1000) as Time, value: ema };
+    });
+}
+
+interface EmaCursor {
+    lastTime: number | null;
+    lastValue: number | null;
+    previousClosedValue: number | null;
+}
+
+function createEmaCursor(): EmaCursor {
+    return { lastTime: null, lastValue: null, previousClosedValue: null };
+}
+
+function seedEmaCursor(
+    cursor: EmaCursor,
+    candles: Candle[],
+    data: ReturnType<typeof calculateEma>
+) {
+    const latestCandle = candles[candles.length - 1];
+    const latestPoint = data[data.length - 1];
+    const previousPoint = data[data.length - 2];
+    cursor.lastTime = latestCandle?.time ?? null;
+    cursor.lastValue = latestPoint?.value ?? null;
+    cursor.previousClosedValue = previousPoint?.value ?? null;
+}
+
+function advanceEmaCursor(cursor: EmaCursor, candle: Candle, period: number) {
+    const time = (candle.time / 1000) as Time;
+    if (cursor.lastTime === null || cursor.lastValue === null) {
+        cursor.lastTime = candle.time;
+        cursor.lastValue = candle.close;
+        cursor.previousClosedValue = null;
+        return { time, value: candle.close };
+    }
+
+    const multiplier = 2 / (period + 1);
+    if (candle.time === cursor.lastTime) {
+        const base = cursor.previousClosedValue;
+        const value = base === null ? candle.close : ((candle.close - base) * multiplier) + base;
+        cursor.lastValue = value;
+        return { time, value };
+    }
+
+    const previousValue = cursor.lastValue;
+    const value = ((candle.close - previousValue) * multiplier) + previousValue;
+    cursor.previousClosedValue = previousValue;
+    cursor.lastTime = candle.time;
+    cursor.lastValue = value;
+    return { time, value };
+}
+
+interface DivergencePivot {
+    index: number;
+    value: number;
+    time?: number;
+}
+
+function buildDivergenceLineData(
+    candles: Candle[],
+    first: DivergencePivot,
+    second: DivergencePivot
+) {
+    const firstCandleTime = candles[0]?.time;
+    const lastCandleTime = candles.at(-1)?.time;
+    const points = [first, second]
+        .map((pivot) => {
+            const time = Number.isFinite(pivot.time)
+                ? pivot.time
+                : candles[pivot.index]?.time;
+            if (
+                !Number.isFinite(time) ||
+                !Number.isFinite(pivot.value) ||
+                firstCandleTime === undefined ||
+                lastCandleTime === undefined ||
+                (time as number) < firstCandleTime ||
+                (time as number) > lastCandleTime
+            ) return null;
+            return { time: ((time as number) / 1000) as Time, value: pivot.value };
+        })
+        .filter((point): point is { time: Time; value: number } => point !== null)
+        .sort((firstPoint, secondPoint) => Number(firstPoint.time) - Number(secondPoint.time));
+
+    if (points.length !== 2 || points[0].time === points[1].time) return [];
+    return points;
+}
+
+function distanceToSegment(
+    pointX: number,
+    pointY: number,
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number
+): number {
+    const segmentX = endX - startX;
+    const segmentY = endY - startY;
+    const lengthSquared = (segmentX * segmentX) + (segmentY * segmentY);
+    if (lengthSquared === 0) return Math.hypot(pointX - startX, pointY - startY);
+    const projection = Math.max(0, Math.min(1, (((pointX - startX) * segmentX) + ((pointY - startY) * segmentY)) / lengthSquared));
+    return Math.hypot(pointX - (startX + (projection * segmentX)), pointY - (startY + (projection * segmentY)));
+}
+
+function findDrawingAtPoint(
+    chart: IChartApi,
+    series: ISeriesApi<'Candlestick'>,
+    drawings: Drawing[],
+    x: number,
+    y: number
+): Drawing | null {
+    const timeX = (time: number) => chart.timeScale().timeToCoordinate((time / 1000) as Time);
+    const priceY = (price: number) => series.priceToCoordinate(price);
+
+    for (const drawing of [...drawings].reverse()) {
+        const startX = timeX(drawing.start.time);
+        const startY = priceY(drawing.start.price);
+        if (startX === null || startY === null) continue;
+
+        if (drawing.type === 'horizontal' && Math.abs(y - startY) <= 8) return drawing;
+        if (!drawing.end) continue;
+
+        const endX = timeX(drawing.end.time);
+        const endY = priceY(drawing.end.price);
+        if (endX === null || endY === null) continue;
+
+        if (drawing.type === 'trend' && distanceToSegment(x, y, startX, startY, endX, endY) <= 9) {
+            return drawing;
+        }
+
+        if (drawing.type === 'fibonacci') {
+            const left = Math.min(startX, endX);
+            if (x < left - 10) continue;
+            const delta = drawing.end.price - drawing.start.price;
+            const nearLevel = FIB_LEVELS.some((level) => {
+                const levelY = priceY(drawing.end!.price - (delta * level));
+                return levelY !== null && Math.abs(y - levelY) <= 7;
+            });
+            if (nearLevel) return drawing;
+        }
+    }
+
+    return null;
+}
+
+function getAutoFibAnchors(candles: Candle[]): { start: DrawingPoint; end: DrawingPoint } | null {
+    const window = candles.slice(-80);
+    if (window.length < 10) return null;
+
+    const high = window.reduce((highest, candle) => candle.high > highest.high ? candle : highest);
+    const low = window.reduce((lowest, candle) => candle.low < lowest.low ? candle : lowest);
+
+    if (high.high === low.low) return null;
+    if (low.time <= high.time) {
+        return {
+            start: { time: low.time, price: low.low },
+            end: { time: high.time, price: high.high },
+        };
+    }
+
+    return {
+        start: { time: high.time, price: high.high },
+        end: { time: low.time, price: low.low },
+    };
+}
+
+function isStoredDrawing(value: unknown): value is Drawing {
+    if (!value || typeof value !== 'object') return false;
+    const drawing = value as Partial<Drawing>;
+    return Boolean(
+        drawing.id &&
+        drawing.type &&
+        drawing.start &&
+        Number.isFinite(drawing.start.time) &&
+        Number.isFinite(drawing.start.price)
+    );
+}
+
+function buildOverlayModel(
+    chart: IChartApi,
+    series: ISeriesApi<'Candlestick'>,
+    width: number,
+    height: number,
+    inputs: OverlayInputs
+): OverlayModel {
+    const model: OverlayModel = { width, height, rects: [], lines: [], texts: [], circles: [] };
+    const plotWidth = Math.max(0, width - PRICE_SCALE_WIDTH);
+    const mainPaneHeight = series.getPane().getHeight();
+    const priceY = (price: number) => series.priceToCoordinate(price);
+    const timeX = (time: number) => chart.timeScale().timeToCoordinate((time / 1000) as Time);
+
+    const addZone = (
+        zone: Zone,
+        options: {
+            idPrefix?: string;
+            fill: string;
+            border: string;
+            label: string;
+            lineWidth?: number;
+            hatch?: boolean;
+        }
+    ) => {
+        const proximal = priceY(zone.proximalLine);
+        const distal = priceY(zone.distalLine);
+        if (proximal === null || distal === null) return;
+        const top = Math.min(proximal, distal);
+        const zoneHeight = Math.max(1, Math.abs(proximal - distal));
+        const idPrefix = options.idPrefix ?? zone.id;
+        model.rects.push({
+            id: `${idPrefix}-fill`,
+            x: 0,
+            y: top,
+            width: plotWidth,
+            height: zoneHeight,
+            fill: options.fill,
+        });
+        if (options.hatch) {
+            model.rects.push({
+                id: `${idPrefix}-hatch`,
+                x: 0,
+                y: top,
+                width: plotWidth,
+                height: zoneHeight,
+                fill: 'url(#chart-event-zone-hatch)',
+            });
+        }
+        model.lines.push(
+            { id: `${idPrefix}-top`, x1: 0, y1: top, x2: plotWidth, y2: top, color: options.border, width: options.lineWidth ?? 1 },
+            { id: `${idPrefix}-bottom`, x1: 0, y1: top + zoneHeight, x2: plotWidth, y2: top + zoneHeight, color: options.border, width: options.lineWidth ?? 1 }
+        );
+        model.texts.push({
+            id: `${idPrefix}-label`,
+            x: 8,
+            y: top + 13,
+            text: options.label,
+            color: options.border,
+            size: 10,
+            weight: 700,
+        });
+    };
+
+    if (inputs.showZones) {
+        const plottedZoneIds = new Set(inputs.signal
+            ? [inputs.signal.originZone.id, inputs.signal.eventZone.id]
+            : []);
+        for (const zone of inputs.zones) {
+            if (plottedZoneIds.has(zone.id)) continue;
+            const colors = zone.status === 'EVENT'
+                ? ZONE_COLORS.EVENT
+                : zone.type === 'SUPPLY'
+                    ? ZONE_COLORS.SUPPLY
+                    : ZONE_COLORS.DEMAND;
+            addZone(zone, {
+                fill: colors.fill,
+                border: colors.border,
+                label: zone.status === 'EVENT' ? 'EVENT' : zone.type,
+            });
+        }
+    }
+
+    if (inputs.signal) {
+        const signal = inputs.signal;
+        const entry = priceY(signal.entryPrice);
+        const stop = priceY(signal.stopLoss);
+        const target = priceY(signal.takeProfit);
+        if (entry !== null && stop !== null && target !== null) {
+            model.rects.push(
+                { id: 'signal-risk', x: 0, y: Math.min(entry, stop), width: plotWidth, height: Math.abs(entry - stop), fill: 'rgba(255,71,87,0.08)' },
+                { id: 'signal-reward', x: 0, y: Math.min(entry, target), width: plotWidth, height: Math.abs(entry - target), fill: 'rgba(0,210,106,0.07)' }
+            );
+            addZone(signal.eventZone, {
+                idPrefix: 'signal-event-zone',
+                fill: 'rgba(100, 116, 139, 0.10)',
+                border: '#94a3b8',
+                label: 'EVENT — broken zone',
+                hatch: true,
+            });
+            addZone(signal.originZone, {
+                idPrefix: 'signal-origin-zone',
+                fill: 'rgba(251, 191, 36, 0.20)',
+                border: '#fbbf24',
+                label: 'ORIGIN — entry zone',
+                lineWidth: 2,
+            });
+            const triggerTime = signal.triggerCandleTime ?? signal.createdAt - getTimeframeMs(signal.timeframe);
+            const triggerX = timeX(triggerTime);
+            if (triggerX !== null) {
+                model.lines.push({ id: 'signal-trigger', x1: triggerX, y1: 0, x2: triggerX, y2: mainPaneHeight, color: '#a78bfa', width: 1, dash: '4 5' });
+                model.circles.push({ id: 'signal-trigger-dot', x: triggerX, y: entry, radius: 4, fill: '#fbbf24' });
+                model.texts.push({
+                    id: 'signal-trigger-label',
+                    x: Math.max(6, Math.min(triggerX + 6, plotWidth - 92)),
+                    y: 16,
+                    text: 'break confirmed',
+                    color: '#a78bfa',
+                    size: 10,
+                    weight: 700,
+                });
+                model.texts.push({
+                    id: 'signal-trigger-age',
+                    x: Math.max(6, Math.min(triggerX + 7, plotWidth - 36)),
+                    y: entry < 28
+                        ? Math.min(entry + 16, mainPaneHeight - 6)
+                        : Math.max(12, entry - 8),
+                    text: formatCompactAge(triggerTime, Date.now()),
+                    color: '#fbbf24',
+                    size: 10,
+                    weight: 700,
+                });
+            }
+        }
+    }
+
+    const addFib = (id: string, start: DrawingPoint, end: DrawingPoint, label: string, selected = false) => {
+        const startX = timeX(start.time);
+        const endX = timeX(end.time);
+        if (startX === null || endX === null) return;
+        const left = Math.max(0, Math.min(startX, endX));
+        const right = Math.max(left + 24, plotWidth);
+        const delta = end.price - start.price;
+
+        for (const level of FIB_LEVELS) {
+            const price = end.price - (delta * level);
+            const y = priceY(price);
+            if (y === null) continue;
+            model.lines.push({
+                id: `${id}-${level}-line`,
+                x1: left,
+                y1: y,
+                x2: right,
+                y2: y,
+                color: selected ? '#ffffff' : '#f59e0b',
+                width: selected ? 2 : 1,
+                opacity: level === 0.5 || level === 0.618 ? 0.9 : 0.5,
+            });
+            model.texts.push({
+                id: `${id}-${level}-label`,
+                x: left + 5,
+                y: y - 3,
+                text: `${label} ${(level * 100).toFixed(1)}% · ${formatPrice(price)}`,
+                color: selected ? '#ffffff' : '#fbbf24',
+                size: 10,
+            });
+        }
+    };
+
+    if (inputs.drawingsVisible) for (const drawing of inputs.drawings) {
+        const selected = drawing.id === inputs.selectedDrawingId;
+        const startX = timeX(drawing.start.time);
+        const startY = priceY(drawing.start.price);
+        if (startX === null || startY === null) continue;
+        if (drawing.type === 'horizontal') {
+            model.lines.push({ id: drawing.id, x1: 0, y1: startY, x2: plotWidth, y2: startY, color: selected ? '#ffffff' : '#38bdf8', width: selected ? 2.5 : 1.5, dash: '6 4' });
+            if (selected) model.circles.push({ id: `${drawing.id}-handle`, x: Math.min(plotWidth - 12, plotWidth * 0.72), y: startY, radius: 5, fill: '#38bdf8', stroke: '#fff' });
+            continue;
+        }
+        if (!drawing.end) continue;
+        if (drawing.type === 'fibonacci') {
+            addFib(drawing.id, drawing.start, drawing.end, 'Fib', selected);
+            if (selected) {
+                const endX = timeX(drawing.end.time);
+                const endY = priceY(drawing.end.price);
+                model.circles.push({ id: `${drawing.id}-start-handle`, x: startX, y: startY, radius: 5, fill: '#f59e0b', stroke: '#fff' });
+                if (endX !== null && endY !== null) model.circles.push({ id: `${drawing.id}-end-handle`, x: endX, y: endY, radius: 5, fill: '#f59e0b', stroke: '#fff' });
+            }
+            continue;
+        }
+        const endX = timeX(drawing.end.time);
+        const endY = priceY(drawing.end.price);
+        if (endX === null || endY === null) continue;
+        model.lines.push({ id: drawing.id, x1: startX, y1: startY, x2: endX, y2: endY, color: selected ? '#ffffff' : '#38bdf8', width: selected ? 3 : 2 });
+        if (selected) {
+            model.circles.push(
+                { id: `${drawing.id}-start-handle`, x: startX, y: startY, radius: 5, fill: '#38bdf8', stroke: '#fff' },
+                { id: `${drawing.id}-end-handle`, x: endX, y: endY, radius: 5, fill: '#38bdf8', stroke: '#fff' }
+            );
+        }
+    }
+
+    if (inputs.showAutoFib && inputs.autoFib) {
+        addFib('auto-fib', inputs.autoFib.start, inputs.autoFib.end, 'Auto Fib');
+    }
+
+    if (inputs.draftAnchor) {
+        const x = timeX(inputs.draftAnchor.time);
+        const y = priceY(inputs.draftAnchor.price);
+        if (x !== null && y !== null) {
+            model.circles.push({ id: 'draft-anchor', x, y, radius: 5, fill: '#38bdf8', stroke: '#fff' });
+        }
+    }
+
+    return model;
+}
+
+export default function Chart({
+    candles,
+    zones = [],
+    isLoading,
+    showRsi,
+    showBollinger,
+    onToggleRsi,
+    onToggleBollinger,
+}: ChartProps) {
+    const showZones = useTradingStore((state) => state.showZones);
+    const toggleZones = useTradingStore((state) => state.toggleZones);
+    const plottedSignal = useTradingStore((state) => state.plottedSignal);
+    const selectedCoin = useTradingStore((state) => state.selectedCoin);
+    const selectedTimeframe = useTradingStore((state) => state.selectedTimeframe);
     const containerRef = useRef<HTMLDivElement>(null);
+    const plotAreaRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-    const priceLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
+    const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+    const ema20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const ema50SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const bollingerUpperSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const bollingerMiddleSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const bollingerLowerSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const rsiPaneRef = useRef<IPaneApi<Time> | null>(null);
+    const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const rsiDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const priceDivergenceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const rsiStateRef = useRef<RsiIncrementalState | null>(null);
+    const ema20Ref = useRef<EmaCursor>(createEmaCursor());
+    const ema50Ref = useRef<EmaCursor>(createEmaCursor());
+    const previousCandlesRef = useRef<Candle[]>([]);
+    const hasInitialDataRef = useRef(false);
+    const overlayFrameRef = useRef<number | null>(null);
+    const overlayHandleRef = useRef<OverlayHandle>(null);
+    const signalPriceLinesRef = useRef<IPriceLine[]>([]);
+    const drawingsHydratedRef = useRef(false);
+    const overlayInputsRef = useRef<OverlayInputs>({
+        zones: [],
+        showZones: false,
+        signal: null,
+        drawings: [],
+        showAutoFib: false,
+        autoFib: null,
+        draftAnchor: null,
+        selectedDrawingId: null,
+        drawingsVisible: true,
+    });
+    const storageKey = `chain-trader-drawings:${selectedCoin}:${selectedTimeframe}`;
+    const [drawingMode, setDrawingMode] = useState<DrawingMode>('cursor');
+    const [drawings, setDrawings] = useState<Drawing[]>([]);
+    const [redoStack, setRedoStack] = useState<Drawing[]>([]);
+    const [draftAnchor, setDraftAnchor] = useState<DrawingPoint | null>(null);
+    const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+    const [drawingsVisible, setDrawingsVisible] = useState(true);
+    const [showAutoFib, setShowAutoFib] = useState(false);
+    const [showVolume, setShowVolume] = useState(true);
+    const [showEma20, setShowEma20] = useState(false);
+    const [showEma50, setShowEma50] = useState(false);
+    const [magnetEnabled, setMagnetEnabled] = useState(false);
+    const [keepDrawing, setKeepDrawing] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [hoverCandle, setHoverCandle] = useState<Candle | null>(null);
+    const [toolMessage, setToolMessage] = useState('Cursor active — drag to pan, scroll to zoom.');
+    const drawingModeRef = useRef<DrawingMode>('cursor');
+    const draftAnchorRef = useRef<DrawingPoint | null>(null);
+    const drawingsRef = useRef<Drawing[]>([]);
+    const dragRef = useRef<DragState | null>(null);
+    const candlesRef = useRef(candles);
+    const magnetEnabledRef = useRef(false);
+    const keepDrawingRef = useRef(false);
+    const hoverCandleTimeRef = useRef<number | null>(null);
 
-    // Initialize chart
+    const signalToPlot = plottedSignal?.coin === selectedCoin && plottedSignal.timeframe === selectedTimeframe
+        ? plottedSignal
+        : null;
+    const latestCandle = candles[candles.length - 1];
+    const currentPrice = latestCandle?.close || 0;
+    const firstCandleTime = candles[0]?.time ?? null;
+    const relevantZones = useMemo(() => getRelevantZones(zones, currentPrice), [currentPrice, zones]);
+    const autoFib = useMemo(() => getAutoFibAnchors(candles), [candles]);
+    const displayCandle = hoverCandle || latestCandle;
+    const candleChange = displayCandle
+        ? displayCandle.open === 0 ? 0 : ((displayCandle.close - displayCandle.open) / displayCandle.open) * 100
+        : 0;
+
+    useEffect(() => {
+        candlesRef.current = candles;
+    }, [candles]);
+
+    useEffect(() => {
+        drawingsRef.current = drawings;
+    }, [drawings]);
+
+    useEffect(() => {
+        magnetEnabledRef.current = magnetEnabled;
+    }, [magnetEnabled]);
+
+    useEffect(() => {
+        keepDrawingRef.current = keepDrawing;
+    }, [keepDrawing]);
+
+    useEffect(() => {
+        if (!isFullscreen) return;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [isFullscreen]);
+
+    const scheduleOverlay = useCallback(() => {
+        if (overlayFrameRef.current !== null) return;
+        overlayFrameRef.current = requestAnimationFrame(() => {
+            overlayFrameRef.current = null;
+            const chart = chartRef.current;
+            const series = seriesRef.current;
+            const container = containerRef.current;
+            if (!chart || !series || !container) return;
+            overlayHandleRef.current?.setModel(buildOverlayModel(
+                chart,
+                series,
+                container.clientWidth,
+                container.clientHeight,
+                overlayInputsRef.current
+            ));
+        });
+    }, []);
+
+    useEffect(() => {
+        let secondFrame: number | null = null;
+        const firstFrame = requestAnimationFrame(() => {
+            secondFrame = requestAnimationFrame(() => {
+                const chart = chartRef.current;
+                const container = containerRef.current;
+                if (!chart || !container) return;
+                chart.resize(container.clientWidth, container.clientHeight);
+                scheduleOverlay();
+            });
+        });
+        return () => {
+            cancelAnimationFrame(firstFrame);
+            if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+        };
+    }, [isFullscreen, scheduleOverlay]);
+
+    useEffect(() => {
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (cancelled) return;
+            let storedDrawings: Drawing[] = [];
+            try {
+                const raw = localStorage.getItem(storageKey);
+                const stored: unknown = raw ? JSON.parse(raw) : [];
+                storedDrawings = Array.isArray(stored) ? stored.filter(isStoredDrawing) : [];
+            } catch {
+                storedDrawings = [];
+            }
+            drawingsHydratedRef.current = true;
+            setDrawings(storedDrawings);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [storageKey]);
+
+    useEffect(() => {
+        if (!drawingsHydratedRef.current) return;
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(drawings));
+        } catch {
+            // Drawing persistence is optional; the live chart remains usable.
+        }
+    }, [drawings, storageKey]);
+
     useEffect(() => {
         if (!containerRef.current) return;
 
         const chart = createChart(containerRef.current, {
+            width: containerRef.current.clientWidth,
+            height: containerRef.current.clientHeight,
             layout: {
                 background: { color: '#141414' },
-                textColor: '#ededed',
+                textColor: '#d4d4d8',
+                panes: {
+                    enableResize: true,
+                    separatorColor: '#2a2e39',
+                    separatorHoverColor: 'rgba(77, 141, 255, 0.18)',
+                },
             },
             grid: {
-                vertLines: { color: '#262626' },
-                horzLines: { color: '#262626' },
+                vertLines: { color: '#232323' },
+                horzLines: { color: '#232323' },
             },
             crosshair: {
                 mode: 1,
-                vertLine: {
-                    color: '#6366f1',
-                    width: 1,
-                    style: 2,
-                    labelBackgroundColor: '#6366f1',
-                },
-                horzLine: {
-                    color: '#6366f1',
-                    width: 1,
-                    style: 2,
-                    labelBackgroundColor: '#6366f1',
-                },
+                vertLine: { color: CHART_ACCENT, width: 1, style: 2, labelBackgroundColor: CHART_ACCENT },
+                horzLine: { color: CHART_ACCENT, width: 1, style: 2, labelBackgroundColor: CHART_ACCENT },
             },
             rightPriceScale: {
-                borderColor: '#262626',
-                scaleMargins: {
-                    top: 0.1,
-                    bottom: 0.1,
-                },
+                borderColor: '#2a2a2a',
+                scaleMargins: { top: 0.08, bottom: 0.1 },
             },
             timeScale: {
-                borderColor: '#262626',
+                borderColor: '#2a2a2a',
                 timeVisible: true,
                 secondsVisible: false,
+                rightOffset: 8,
+                barSpacing: 8,
             },
-            handleScale: {
-                axisPressedMouseMove: true,
-            },
-            handleScroll: {
-                mouseWheel: true,
-                pressedMouseMove: true,
-            },
+            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
         });
-
         const series = chart.addSeries(CandlestickSeries, {
             upColor: '#00d26a',
             downColor: '#ff4757',
@@ -72,149 +752,1025 @@ export default function Chart({ candles, zones = [], isLoading }: ChartProps) {
             borderDownColor: '#ff4757',
             wickUpColor: '#00d26a',
             wickDownColor: '#ff4757',
+            priceLineVisible: true,
+            lastValueVisible: true,
+        });
+        const volumeSeries = chart.addSeries(HistogramSeries, {
+            priceScaleId: 'volume',
+            priceFormat: { type: 'volume' },
+            lastValueVisible: false,
+            priceLineVisible: false,
+            visible: true,
+        });
+        const ema20Series = chart.addSeries(LineSeries, {
+            color: CHART_ACCENT,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            visible: false,
+        });
+        const ema50Series = chart.addSeries(LineSeries, {
+            color: '#f59e0b',
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            visible: false,
+        });
+        const bollingerUpperSeries = chart.addSeries(LineSeries, {
+            color: 'rgba(139, 152, 178, 0.72)',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            visible: false,
+        });
+        const bollingerMiddleSeries = chart.addSeries(LineSeries, {
+            color: 'rgba(139, 152, 178, 0.58)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            visible: false,
+        });
+        const bollingerLowerSeries = chart.addSeries(LineSeries, {
+            color: 'rgba(139, 152, 178, 0.72)',
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            visible: false,
+        });
+        chart.priceScale('volume').applyOptions({
+            scaleMargins: { top: 0.82, bottom: 0 },
         });
 
         chartRef.current = chart;
         seriesRef.current = series;
-
-        // Handle resize
-        const handleResize = () => {
-            if (containerRef.current && chartRef.current) {
-                chartRef.current.applyOptions({
-                    width: containerRef.current.clientWidth,
-                    height: containerRef.current.clientHeight,
-                });
+        volumeSeriesRef.current = volumeSeries;
+        ema20SeriesRef.current = ema20Series;
+        ema50SeriesRef.current = ema50Series;
+        bollingerUpperSeriesRef.current = bollingerUpperSeries;
+        bollingerMiddleSeriesRef.current = bollingerMiddleSeries;
+        bollingerLowerSeriesRef.current = bollingerLowerSeries;
+        const resizeObserver = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            chart.resize(Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height));
+            scheduleOverlay();
+        });
+        resizeObserver.observe(containerRef.current);
+        const mainPaneResizeObserver = new ResizeObserver(scheduleOverlay);
+        let observePaneFrame: number | null = null;
+        const observeMainPane = () => {
+            const paneElement = series.getPane().getHTMLElement();
+            if (paneElement) {
+                mainPaneResizeObserver.observe(paneElement);
+            } else {
+                observePaneFrame = requestAnimationFrame(observeMainPane);
             }
         };
-
-        window.addEventListener('resize', handleResize);
-        handleResize();
+        observeMainPane();
+        const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+            const time = typeof param.time === 'number' ? param.time * 1000 : null;
+            if (time === hoverCandleTimeRef.current) return;
+            hoverCandleTimeRef.current = time;
+            setHoverCandle(time === null ? null : candlesRef.current.find((candle) => candle.time === time) || null);
+        };
+        chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleOverlay);
+        chart.subscribeCrosshairMove(handleCrosshairMove);
 
         return () => {
-            window.removeEventListener('resize', handleResize);
+            resizeObserver.disconnect();
+            mainPaneResizeObserver.disconnect();
+            if (observePaneFrame !== null) cancelAnimationFrame(observePaneFrame);
+            chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleOverlay);
+            chart.unsubscribeCrosshairMove(handleCrosshairMove);
+            if (overlayFrameRef.current !== null) cancelAnimationFrame(overlayFrameRef.current);
+            signalPriceLinesRef.current.forEach((line) => series.removePriceLine(line));
+            signalPriceLinesRef.current = [];
             chart.remove();
+            chartRef.current = null;
+            seriesRef.current = null;
+            volumeSeriesRef.current = null;
+            ema20SeriesRef.current = null;
+            ema50SeriesRef.current = null;
+            bollingerUpperSeriesRef.current = null;
+            bollingerMiddleSeriesRef.current = null;
+            bollingerLowerSeriesRef.current = null;
+            rsiPaneRef.current = null;
+            rsiSeriesRef.current = null;
+            rsiDivergenceSeriesRef.current = null;
+            priceDivergenceSeriesRef.current = null;
+            rsiStateRef.current = null;
         };
+    }, [scheduleOverlay]);
+
+    useEffect(() => {
+        volumeSeriesRef.current?.applyOptions({ visible: showVolume });
+        const ema20Series = ema20SeriesRef.current;
+        const ema50Series = ema50SeriesRef.current;
+        ema20Series?.applyOptions({ visible: showEma20 });
+        ema50Series?.applyOptions({ visible: showEma50 });
+
+        if (showEma20 && ema20Series) {
+            const ema20Data = calculateEma(candlesRef.current, 20);
+            ema20Series.setData(ema20Data);
+            seedEmaCursor(ema20Ref.current, candlesRef.current, ema20Data);
+        }
+        if (showEma50 && ema50Series) {
+            const ema50Data = calculateEma(candlesRef.current, 50);
+            ema50Series.setData(ema50Data);
+            seedEmaCursor(ema50Ref.current, candlesRef.current, ema50Data);
+        }
+    }, [showEma20, showEma50, showVolume]);
+
+    useEffect(() => {
+        const upperSeries = bollingerUpperSeriesRef.current;
+        const middleSeries = bollingerMiddleSeriesRef.current;
+        const lowerSeries = bollingerLowerSeriesRef.current;
+        if (!upperSeries || !middleSeries || !lowerSeries) return;
+
+        upperSeries.applyOptions({ visible: showBollinger });
+        middleSeries.applyOptions({ visible: showBollinger });
+        lowerSeries.applyOptions({ visible: showBollinger });
+        if (!showBollinger) return;
+
+        const bands = calculateBollingerBands(candlesRef.current);
+        upperSeries.setData(bands.map((point) => ({
+            time: (point.time / 1000) as Time,
+            value: point.upper,
+        })));
+        middleSeries.setData(bands.map((point) => ({
+            time: (point.time / 1000) as Time,
+            value: point.middle,
+        })));
+        lowerSeries.setData(bands.map((point) => ({
+            time: (point.time / 1000) as Time,
+            value: point.lower,
+        })));
+    }, [showBollinger]);
+
+    useEffect(() => {
+        const chart = chartRef.current;
+        if (!chart || !showRsi) return;
+
+        const pane = chart.addPane(true);
+        chart.panes()[0]?.setStretchFactor(3);
+        pane.setStretchFactor(1);
+
+        const rsiSeries = pane.addSeries(LineSeries, {
+            title: 'RSI 14',
+            color: '#8b5cf6',
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            crosshairMarkerVisible: true,
+            priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+            autoscaleInfoProvider: () => ({
+                priceRange: { minValue: 0, maxValue: 100 },
+            }),
+        });
+        rsiSeries.createPriceLine({
+            price: 70,
+            color: 'rgba(148, 163, 184, 0.55)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: '70',
+        });
+        rsiSeries.createPriceLine({
+            price: 30,
+            color: 'rgba(148, 163, 184, 0.55)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: '30',
+        });
+        const rsiDivergenceSeries = pane.addSeries(LineSeries, {
+            color: '#22c55e',
+            lineWidth: 2,
+            lineStyle: LineStyle.Dotted,
+            pointMarkersVisible: true,
+            pointMarkersRadius: 4,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        });
+        const priceDivergenceSeries = chart.addSeries(LineSeries, {
+            color: '#22c55e',
+            lineWidth: 2,
+            lineStyle: LineStyle.Dotted,
+            pointMarkersVisible: true,
+            pointMarkersRadius: 4,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        });
+
+        pane.priceScale('right').applyOptions({
+            autoScale: true,
+            borderColor: '#2a2e39',
+            scaleMargins: { top: 0.06, bottom: 0.06 },
+        });
+
+        const seeded = calculateRsiSeries(candlesRef.current);
+        rsiSeries.setData(seeded.points.map((point) => ({
+            time: (point.time / 1000) as Time,
+            value: point.value,
+        })));
+        rsiStateRef.current = seeded.state;
+        rsiPaneRef.current = pane;
+        rsiSeriesRef.current = rsiSeries;
+        rsiDivergenceSeriesRef.current = rsiDivergenceSeries;
+        priceDivergenceSeriesRef.current = priceDivergenceSeries;
+        scheduleOverlay();
+
+        return () => {
+            if (chartRef.current === chart) {
+                const paneIndex = pane.paneIndex();
+                chart.removeSeries(priceDivergenceSeries);
+                chart.removeSeries(rsiDivergenceSeries);
+                chart.removeSeries(rsiSeries);
+                chart.removePane(paneIndex);
+                scheduleOverlay();
+            }
+            rsiPaneRef.current = null;
+            rsiSeriesRef.current = null;
+            rsiDivergenceSeriesRef.current = null;
+            priceDivergenceSeriesRef.current = null;
+            rsiStateRef.current = null;
+        };
+    }, [scheduleOverlay, showRsi]);
+
+    useEffect(() => {
+        const priceDivergenceSeries = priceDivergenceSeriesRef.current;
+        const rsiDivergenceSeries = rsiDivergenceSeriesRef.current;
+        if (!showRsi || !priceDivergenceSeries || !rsiDivergenceSeries) return;
+
+        const divergence = signalToPlot?.divergence;
+        if (!signalToPlot?.hasRsiDivergence || !divergence) {
+            priceDivergenceSeries.setData([]);
+            rsiDivergenceSeries.setData([]);
+            return;
+        }
+
+        const color = divergence.type === 'BULLISH' ? '#22c55e' : '#ef5350';
+        priceDivergenceSeries.applyOptions({ color });
+        rsiDivergenceSeries.applyOptions({ color });
+        priceDivergenceSeries.setData(buildDivergenceLineData(
+            candlesRef.current,
+            divergence.pricePoint1,
+            divergence.pricePoint2
+        ));
+        rsiDivergenceSeries.setData(buildDivergenceLineData(
+            candlesRef.current,
+            divergence.rsiPoint1,
+            divergence.rsiPoint2
+        ));
+    }, [firstCandleTime, showRsi, signalToPlot]);
+
+    useEffect(() => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        const canPan = drawingMode === 'cursor';
+        chart.applyOptions({
+            handleScroll: {
+                mouseWheel: true,
+                pressedMouseMove: canPan,
+                horzTouchDrag: canPan,
+                vertTouchDrag: canPan,
+            },
+            handleScale: { axisPressedMouseMove: canPan, mouseWheel: true, pinch: true },
+        });
+    }, [drawingMode]);
+
+    useEffect(() => {
+        const series = seriesRef.current;
+        const volumeSeries = volumeSeriesRef.current;
+        const ema20Series = ema20SeriesRef.current;
+        const ema50Series = ema50SeriesRef.current;
+        const chart = chartRef.current;
+        if (!series || !volumeSeries || !ema20Series || !ema50Series || !chart || candles.length === 0) return;
+
+        const latest = candles[candles.length - 1];
+        const latestData: CandlestickData<Time> = {
+            time: (latest.time / 1000) as Time,
+            open: latest.open,
+            high: latest.high,
+            low: latest.low,
+            close: latest.close,
+        };
+        const latestVolume = {
+            time: (latest.time / 1000) as Time,
+            value: latest.volume,
+            color: latest.close >= latest.open ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)',
+        };
+        const canIncrementallyUpdate = hasInitialDataRef.current &&
+            canUpdateLastCandle(previousCandlesRef.current, candles);
+
+        if (canIncrementallyUpdate) {
+            series.update(latestData);
+            volumeSeries.update(latestVolume);
+            if (showEma20) ema20Series.update(advanceEmaCursor(ema20Ref.current, latest, 20));
+            if (showEma50) ema50Series.update(advanceEmaCursor(ema50Ref.current, latest, 50));
+            if (showRsi && rsiSeriesRef.current && rsiStateRef.current) {
+                const rsiUpdate = updateRsiLastPoint(rsiStateRef.current, latest);
+                rsiStateRef.current = rsiUpdate.state;
+                if (rsiUpdate.point) {
+                    rsiSeriesRef.current.update({
+                        time: (rsiUpdate.point.time / 1000) as Time,
+                        value: rsiUpdate.point.value,
+                    });
+                }
+            }
+            if (
+                showBollinger &&
+                bollingerUpperSeriesRef.current &&
+                bollingerMiddleSeriesRef.current &&
+                bollingerLowerSeriesRef.current
+            ) {
+                const band = calculateBollingerLastPoint(candles);
+                if (band) {
+                    const time = (band.time / 1000) as Time;
+                    bollingerUpperSeriesRef.current.update({ time, value: band.upper });
+                    bollingerMiddleSeriesRef.current.update({ time, value: band.middle });
+                    bollingerLowerSeriesRef.current.update({ time, value: band.lower });
+                }
+            }
+        } else {
+            series.setData(candles.map((candle) => ({
+                time: (candle.time / 1000) as Time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+            })));
+            volumeSeries.setData(candles.map((candle) => ({
+                time: (candle.time / 1000) as Time,
+                value: candle.volume,
+                color: candle.close >= candle.open ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)',
+            })));
+            if (showEma20) {
+                const ema20Data = calculateEma(candles, 20);
+                ema20Series.setData(ema20Data);
+                seedEmaCursor(ema20Ref.current, candles, ema20Data);
+            }
+            if (showEma50) {
+                const ema50Data = calculateEma(candles, 50);
+                ema50Series.setData(ema50Data);
+                seedEmaCursor(ema50Ref.current, candles, ema50Data);
+            }
+            if (showRsi && rsiSeriesRef.current) {
+                const rsi = calculateRsiSeries(candles);
+                rsiSeriesRef.current.setData(rsi.points.map((point) => ({
+                    time: (point.time / 1000) as Time,
+                    value: point.value,
+                })));
+                rsiStateRef.current = rsi.state;
+            }
+            if (
+                showBollinger &&
+                bollingerUpperSeriesRef.current &&
+                bollingerMiddleSeriesRef.current &&
+                bollingerLowerSeriesRef.current
+            ) {
+                const bands = calculateBollingerBands(candles);
+                bollingerUpperSeriesRef.current.setData(bands.map((point) => ({
+                    time: (point.time / 1000) as Time,
+                    value: point.upper,
+                })));
+                bollingerMiddleSeriesRef.current.setData(bands.map((point) => ({
+                    time: (point.time / 1000) as Time,
+                    value: point.middle,
+                })));
+                bollingerLowerSeriesRef.current.setData(bands.map((point) => ({
+                    time: (point.time / 1000) as Time,
+                    value: point.lower,
+                })));
+            }
+            if (!hasInitialDataRef.current) chart.timeScale().fitContent();
+            hasInitialDataRef.current = true;
+        }
+
+        previousCandlesRef.current = candles;
+        scheduleOverlay();
+    }, [candles, scheduleOverlay, showBollinger, showEma20, showEma50, showRsi]);
+
+    useEffect(() => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        if (!chart || !series) return;
+
+        signalPriceLinesRef.current.forEach((line) => series.removePriceLine(line));
+        signalPriceLinesRef.current = [];
+
+        const autoscaleInfoProvider: AutoscaleInfoProvider = (original) => {
+            const result = original();
+            if (!result || !signalToPlot) return result;
+            const plottedLevels = [
+                signalToPlot.entryPrice,
+                signalToPlot.stopLoss,
+                signalToPlot.takeProfit,
+                signalToPlot.originZone.proximalLine,
+                signalToPlot.originZone.distalLine,
+                signalToPlot.eventZone.proximalLine,
+                signalToPlot.eventZone.distalLine,
+            ];
+            const signalMinimum = Math.min(...plottedLevels);
+            const signalMaximum = Math.max(...plottedLevels);
+
+            return {
+                ...result,
+                priceRange: {
+                    minValue: Math.min(result.priceRange?.minValue ?? signalMinimum, signalMinimum),
+                    maxValue: Math.max(result.priceRange?.maxValue ?? signalMaximum, signalMaximum),
+                },
+            };
+        };
+        series.applyOptions({ autoscaleInfoProvider });
+
+        if (signalToPlot) {
+            signalPriceLinesRef.current = [
+                series.createPriceLine({
+                    price: signalToPlot.entryPrice,
+                    color: '#fbbf24',
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: 'ENTRY',
+                }),
+                series.createPriceLine({
+                    price: signalToPlot.stopLoss,
+                    color: '#ff4757',
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: 'STOP',
+                }),
+                series.createPriceLine({
+                    price: signalToPlot.takeProfit,
+                    color: '#00d26a',
+                    lineWidth: 2,
+                    lineStyle: LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: 'TARGET',
+                }),
+            ];
+        }
+
+        chart.priceScale('right').applyOptions({ autoScale: true });
+        scheduleOverlay();
+    }, [scheduleOverlay, signalToPlot]);
+
+    useEffect(() => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        if (!chart || !series) return;
+
+        const handleClick = (param: MouseEventParams<Time>) => {
+            const activeMode = drawingModeRef.current;
+            if (activeMode === 'cursor' || !param.point || param.time === undefined) return;
+            if ((param.paneIndex ?? 0) !== series.getPane().paneIndex()) return;
+            const price = series.coordinateToPrice(param.point.y);
+            const time = typeof param.time === 'number' ? param.time * 1000 : NaN;
+            if (price === null || !Number.isFinite(time)) return;
+
+            let point: DrawingPoint = { time, price: Number(price) };
+            if (magnetEnabledRef.current) {
+                const nearestCandle = candlesRef.current.reduce<Candle | null>((nearest, candle) => {
+                    if (!nearest) return candle;
+                    return Math.abs(candle.time - time) < Math.abs(nearest.time - time) ? candle : nearest;
+                }, null);
+                if (nearestCandle) {
+                    const snappedPrice = [nearestCandle.open, nearestCandle.high, nearestCandle.low, nearestCandle.close]
+                        .reduce((nearest, candidate) => Math.abs(candidate - price) < Math.abs(nearest - price) ? candidate : nearest);
+                    point = { time: nearestCandle.time, price: snappedPrice };
+                }
+            }
+            if (activeMode === 'horizontal') {
+                const drawing = { id: drawingId(), type: 'horizontal' as const, start: point };
+                setDrawings((items) => [...items, drawing]);
+                setRedoStack([]);
+                setSelectedDrawingId(drawing.id);
+                if (!keepDrawingRef.current) {
+                    drawingModeRef.current = 'cursor';
+                    setDrawingMode('cursor');
+                }
+                setToolMessage(`Horizontal line added at ${formatPrice(point.price)}. Drag it to reposition or press Delete to remove.`);
+                return;
+            }
+
+            const currentAnchor = draftAnchorRef.current;
+            if (!currentAnchor) {
+                draftAnchorRef.current = point;
+                setDraftAnchor(point);
+                setToolMessage(`First anchor set at ${formatPrice(price)} — click the chart again to finish.`);
+                return;
+            }
+
+            const drawing = { id: drawingId(), type: activeMode, start: currentAnchor, end: point } as Drawing;
+            setDrawings((items) => [...items, drawing]);
+            setRedoStack([]);
+            setSelectedDrawingId(drawing.id);
+            if (activeMode === 'fibonacci') setShowAutoFib(false);
+            draftAnchorRef.current = null;
+            setDraftAnchor(null);
+            if (!keepDrawingRef.current) {
+                drawingModeRef.current = 'cursor';
+                setDrawingMode('cursor');
+            }
+            setToolMessage(`${activeMode === 'trend' ? 'Trend line' : 'Fibonacci retracement'} added. Drag it to reposition or press Delete to remove.`);
+        };
+
+        chart.subscribeClick(handleClick);
+        return () => chart.unsubscribeClick(handleClick);
     }, []);
 
-    // Update candle data
     useEffect(() => {
-        if (!seriesRef.current || candles.length === 0) return;
+        overlayInputsRef.current = {
+            zones: relevantZones,
+            showZones,
+            signal: signalToPlot,
+            drawings,
+            showAutoFib,
+            autoFib,
+            draftAnchor,
+            selectedDrawingId,
+            drawingsVisible,
+        };
+        scheduleOverlay();
+    }, [autoFib, draftAnchor, drawings, drawingsVisible, relevantZones, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay]);
 
-        const chartData: CandlestickData<Time>[] = candles.map((c) => ({
-            time: (c.time / 1000) as Time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-        }));
-
-        seriesRef.current.setData(chartData);
-
-        if (chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-        }
-    }, [candles]);
-
-    // Draw zone overlays using price lines
-    useEffect(() => {
-        if (!seriesRef.current) return;
-
-        // Clear existing price lines
-        priceLinesRef.current.forEach(line => {
-            try {
-                seriesRef.current?.removePriceLine(line);
-            } catch (e) {
-                // Line may already be removed
-            }
-        });
-        priceLinesRef.current = [];
-
-        if (zones.length === 0) return;
-
-        // Create price lines for each zone
-        zones.forEach((zone) => {
-            if (zone.status === 'BROKEN' || !seriesRef.current) return;
-
-            const isSupply = zone.type === 'SUPPLY';
-            const isEvent = zone.status === 'EVENT';
-
-            // Zone colors
-            const lineColor = isEvent
-                ? '#666666'
-                : isSupply
-                    ? '#ff4757'
-                    : '#00d26a';
-
-            // Proximal line (entry level) - solid
-            try {
-                const proximalLine = seriesRef.current.createPriceLine({
-                    price: zone.proximalLine,
-                    color: lineColor,
-                    lineWidth: 2,
-                    lineStyle: 0, // Solid
-                    axisLabelVisible: true,
-                    title: isEvent ? 'EVT' : isSupply ? 'S' : 'D',
-                });
-                priceLinesRef.current.push(proximalLine);
-
-                // Distal line (stop level) - dashed
-                const distalLine = seriesRef.current.createPriceLine({
-                    price: zone.distalLine,
-                    color: lineColor,
-                    lineWidth: 1,
-                    lineStyle: 2, // Dashed
-                    axisLabelVisible: false,
-                    title: '',
-                });
-                priceLinesRef.current.push(distalLine);
-            } catch (e) {
-                console.error('Error creating price line:', e);
-            }
-        });
-
-    }, [zones]);
-
-    if (isLoading) {
-        return (
-            <div className="chart-container flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                    <svg className="animate-spin w-8 h-8 text-[var(--accent)]" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    <span className="text-[var(--text-muted)]">Loading chart data...</span>
-                </div>
-            </div>
+    const setMode = (mode: DrawingMode) => {
+        drawingModeRef.current = mode;
+        draftAnchorRef.current = null;
+        setDrawingMode(mode);
+        setDraftAnchor(null);
+        if (mode !== 'cursor') setSelectedDrawingId(null);
+        setToolMessage(
+            mode === 'cursor'
+                ? 'Cursor active — drag to pan, scroll to zoom.'
+                : mode === 'horizontal'
+                    ? 'H-Line active — click the chart at the price level you want.'
+                    : mode === 'trend'
+                        ? 'Trend active — click a start point, then click an end point.'
+                        : 'Fib Draw active — click the swing start, then click the swing end.'
         );
-    }
+    };
+
+    const zoomChart = (factor: number) => {
+        const timeScale = chartRef.current?.timeScale();
+        const range = timeScale?.getVisibleLogicalRange();
+        if (!timeScale || !range) return;
+        const center = (range.from + range.to) / 2;
+        const halfRange = ((range.to - range.from) * factor) / 2;
+        timeScale.setVisibleLogicalRange({ from: center - halfRange, to: center + halfRange });
+        setToolMessage(factor < 1 ? 'Chart zoomed in.' : 'Chart zoomed out.');
+    };
+
+    const resetView = () => {
+        chartRef.current?.timeScale().fitContent();
+        chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
+        setToolMessage('Chart view reset to fit all loaded candles.');
+    };
+
+    const goToRealtime = () => {
+        chartRef.current?.timeScale().scrollToRealTime();
+        setToolMessage('Returned to the latest live candle.');
+    };
+
+    const toggleMagnet = () => {
+        const next = !magnetEnabledRef.current;
+        magnetEnabledRef.current = next;
+        setMagnetEnabled(next);
+        setToolMessage(next ? 'Magnet on — drawing points snap to the nearest OHLC value.' : 'Magnet off — drawing points use the exact cursor price.');
+    };
+
+    const toggleKeepDrawing = () => {
+        const next = !keepDrawingRef.current;
+        keepDrawingRef.current = next;
+        setKeepDrawing(next);
+        setToolMessage(next ? 'Keep drawing on — the selected tool stays active after completion.' : 'Keep drawing off — the chart returns to Cursor after each drawing.');
+    };
+
+    const deleteSelectedDrawing = () => {
+        if (!selectedDrawingId) return;
+        const selected = drawingsRef.current.find((drawing) => drawing.id === selectedDrawingId);
+        if (!selected) return;
+        setDrawings((items) => items.filter((drawing) => drawing.id !== selectedDrawingId));
+        setRedoStack((items) => [...items, selected]);
+        setSelectedDrawingId(null);
+        setToolMessage('Selected drawing removed. Use Redo to restore it.');
+    };
+
+    const pointFromPointer = (event: React.PointerEvent<HTMLDivElement>): DrawingPoint | null => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        const area = plotAreaRef.current;
+        if (!chart || !series || !area) return null;
+        const bounds = area.getBoundingClientRect();
+        const paneY = event.clientY - bounds.top;
+        if (paneY < 0 || paneY > series.getPane().getHeight()) return null;
+        const time = chart.timeScale().coordinateToTime(event.clientX - bounds.left);
+        const price = series.coordinateToPrice(paneY);
+        if (typeof time !== 'number' || price === null) return null;
+        return { time: time * 1000, price };
+    };
+
+    const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (drawingModeRef.current !== 'cursor' || !drawingsVisible) return;
+        plotAreaRef.current?.focus({ preventScroll: true });
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        const area = plotAreaRef.current;
+        if (!chart || !series || !area) return;
+        const bounds = area.getBoundingClientRect();
+        const paneY = event.clientY - bounds.top;
+        if (paneY < 0 || paneY > series.getPane().getHeight()) return;
+        const hit = findDrawingAtPoint(
+            chart,
+            series,
+            drawingsRef.current,
+            event.clientX - bounds.left,
+            paneY
+        );
+        if (!hit) {
+            setSelectedDrawingId(null);
+            return;
+        }
+        const start = pointFromPointer(event);
+        if (!start) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = { id: hit.id, origin: hit, start, pointerId: event.pointerId };
+        setSelectedDrawingId(hit.id);
+        setToolMessage('Drawing selected — drag to move it, or press Delete to remove it.');
+    };
+
+    const handlePointerMoveCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        const point = pointFromPointer(event);
+        if (!point) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const timeDelta = point.time - drag.start.time;
+        const priceDelta = point.price - drag.start.price;
+        setDrawings((items) => items.map((drawing) => {
+            if (drawing.id !== drag.id) return drawing;
+            if (drawing.type === 'horizontal') {
+                return { ...drag.origin, start: { ...drag.origin.start, price: drag.origin.start.price + priceDelta } };
+            }
+            return {
+                ...drag.origin,
+                start: {
+                    time: drag.origin.start.time + timeDelta,
+                    price: drag.origin.start.price + priceDelta,
+                },
+                end: drag.origin.end ? {
+                    time: drag.origin.end.time + timeDelta,
+                    price: drag.origin.end.price + priceDelta,
+                } : undefined,
+            };
+        }));
+    };
+
+    const handlePointerUpCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!dragRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        dragRef.current = null;
+        setRedoStack([]);
+        setToolMessage('Drawing moved. Changes are saved for this market and timeframe.');
+    };
+
+    const handleChartKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        const key = event.key.toLowerCase();
+        if (key === 'escape') {
+            event.preventDefault();
+            if (isFullscreen) setIsFullscreen(false);
+            draftAnchorRef.current = null;
+            setDraftAnchor(null);
+            setSelectedDrawingId(null);
+            drawingModeRef.current = 'cursor';
+            setDrawingMode('cursor');
+            setToolMessage('Cursor active — drag to pan, scroll to zoom.');
+            return;
+        }
+        if ((key === 'delete' || key === 'backspace') && selectedDrawingId) {
+            event.preventDefault();
+            deleteSelectedDrawing();
+            return;
+        }
+        if (key === 'r') { event.preventDefault(); resetView(); }
+        else if (key === 'g') { event.preventDefault(); goToRealtime(); }
+        else if (key === 'f') { event.preventDefault(); setIsFullscreen((fullscreen) => !fullscreen); }
+        else if (key === 'm') { event.preventDefault(); toggleMagnet(); }
+        else if (key === 'v') {
+            event.preventDefault();
+            setShowVolume(!showVolume);
+            setToolMessage(showVolume ? 'Volume hidden.' : 'Volume shown.');
+        }
+        else if (key === 't') { event.preventDefault(); setMode('trend'); }
+        else if (key === 'h') { event.preventDefault(); setMode('horizontal'); }
+        else if (key === 'b') { event.preventDefault(); setMode('fibonacci'); }
+        else if (key === '+' || key === '=') { event.preventDefault(); zoomChart(0.8); }
+        else if (key === '-') { event.preventDefault(); zoomChart(1.25); }
+    };
+
+    const toggleAutoFib = () => {
+        const nextVisible = !showAutoFib;
+        setShowAutoFib(nextVisible);
+        setToolMessage(
+            nextVisible
+                ? autoFib
+                    ? 'Auto Fibonacci shown from the latest 80-candle swing.'
+                    : 'Auto Fibonacci needs at least 10 candles.'
+                : 'Auto Fibonacci hidden.'
+        );
+    };
+
+    const handleToggleZones = () => {
+        const nextVisible = !showZones;
+        toggleZones();
+        setToolMessage(
+            nextVisible
+                ? relevantZones.length > 0
+                    ? `${relevantZones.length} active supply/demand zone${relevantZones.length === 1 ? '' : 's'} shown.`
+                    : 'Zones are on, but this scan has no active nearby supply or demand zones.'
+                : 'Supply and demand zones hidden.'
+        );
+    };
+
+    const undoDrawing = () => {
+        if (draftAnchor) {
+            draftAnchorRef.current = null;
+            setDraftAnchor(null);
+            setToolMessage('Unfinished drawing cancelled.');
+            return;
+        }
+        if (drawings.length === 0) {
+            setToolMessage('There are no manual drawings to undo.');
+            return;
+        }
+        const removed = drawings[drawings.length - 1];
+        setDrawings((items) => items.slice(0, -1));
+        setRedoStack((items) => removed ? [...items, removed] : items);
+        setSelectedDrawingId(null);
+        setToolMessage('Last manual drawing removed. Use Redo to restore it.');
+    };
+
+    const redoDrawing = () => {
+        const restored = redoStack[redoStack.length - 1];
+        if (!restored) {
+            setToolMessage('There is nothing to redo.');
+            return;
+        }
+        setRedoStack((items) => items.slice(0, -1));
+        setDrawings((items) => [...items, restored]);
+        setSelectedDrawingId(restored.id);
+        setDrawingsVisible(true);
+        setToolMessage('Drawing restored.');
+    };
+
+    const clearDrawings = () => {
+        const hadDrawings = drawings.length > 0 || draftAnchor !== null || showAutoFib;
+        if (drawings.length > 0) setRedoStack((items) => [...items, ...drawings]);
+        setDrawings([]);
+        draftAnchorRef.current = null;
+        setDraftAnchor(null);
+        setSelectedDrawingId(null);
+        setShowAutoFib(false);
+        setToolMessage(hadDrawings ? 'All manual drawings and Auto Fibonacci were cleared.' : 'There are no drawings to clear.');
+    };
 
     return (
-        <div className="relative">
-            <div className="chart-container" ref={containerRef} style={{ height: 500 }} />
+        <section
+            id="strategy-chart"
+            data-testid="strategy-chart"
+            className={`min-w-0 max-w-full scroll-mt-6 ${isFullscreen ? 'fixed inset-0 z-[100] bg-[#0b0e14] p-2' : ''}`}
+        >
+            <div className={`flex w-full min-w-0 overflow-hidden rounded-xl border border-[#2a2e39] bg-[#131722] shadow-2xl ${isFullscreen ? 'h-full' : 'h-[620px]'}`}>
+                <div className="flex min-w-0 flex-1 flex-col">
+                    <div
+                        className="flex min-h-11 items-center justify-between gap-2 overflow-x-auto border-b border-[#2a2e39] bg-[#131722] px-2"
+                        data-testid="chart-top-toolbar"
+                    >
+                        <div className="flex shrink-0 items-center gap-3 text-xs">
+                            <span className="font-semibold text-white">{selectedCoin}USD</span>
+                            <span className="rounded bg-[var(--accent-dim)] px-1.5 py-0.5 font-semibold text-[var(--accent)]">{selectedTimeframe.toUpperCase()}</span>
+                            {displayCandle && (
+                                <div className="hidden items-center gap-2 font-mono text-[11px] 2xl:flex" data-testid="chart-ohlc">
+                                    <span className="text-[#787b86]">O <b className="font-normal text-[#d1d4dc]">{formatPrice(displayCandle.open)}</b></span>
+                                    <span className="text-[#787b86]">H <b className="font-normal text-[#26a69a]">{formatPrice(displayCandle.high)}</b></span>
+                                    <span className="text-[#787b86]">L <b className="font-normal text-[#ef5350]">{formatPrice(displayCandle.low)}</b></span>
+                                    <span className="text-[#787b86]">C <b className="font-normal text-[#d1d4dc]">{formatPrice(displayCandle.close)}</b></span>
+                                    <span className={candleChange >= 0 ? 'text-[#26a69a]' : 'text-[#ef5350]'}>
+                                        {candleChange >= 0 ? '+' : ''}{candleChange.toFixed(2)}%
+                                    </span>
+                                </div>
+                            )}
+                        </div>
 
-            {/* Zone Legend */}
-            {zones.length > 0 && (
-                <div className="absolute top-4 left-4 flex gap-4 text-xs">
-                    <div className="flex items-center gap-2 bg-[var(--card-bg)] px-3 py-1.5 rounded-lg border border-[var(--card-border)]">
-                        <div className="w-3 h-3 rounded-sm bg-[#00d26a]" />
-                        <span>Demand (D)</span>
+                        <div className="flex shrink-0 items-center gap-1" role="toolbar" aria-label="Indicators and chart view controls">
+                            <IndicatorButton label="EMA 20" active={showEma20} onClick={() => setShowEma20((visible) => !visible)}>
+                                <Activity size={14} /><span className="2xl:hidden">20</span><span className="hidden 2xl:inline">EMA 20</span>
+                            </IndicatorButton>
+                            <IndicatorButton label="EMA 50" active={showEma50} onClick={() => setShowEma50((visible) => !visible)}>
+                                <Activity size={14} /><span className="2xl:hidden">50</span><span className="hidden 2xl:inline">EMA 50</span>
+                            </IndicatorButton>
+                            <IndicatorButton label="RSI 14" active={showRsi} onClick={onToggleRsi}>
+                                <Activity size={14} /><span>RSI</span>
+                            </IndicatorButton>
+                            <IndicatorButton label="Bollinger Bands" active={showBollinger} onClick={onToggleBollinger}>
+                                <GalleryVerticalEnd size={14} /><span>BB</span>
+                            </IndicatorButton>
+                            <IndicatorButton label="Volume (V)" active={showVolume} onClick={() => setShowVolume((visible) => !visible)}>
+                                <BarChart3 size={14} /><span className="hidden 2xl:inline">Volume</span>
+                            </IndicatorButton>
+                            <span className="mx-1 h-6 w-px bg-[#2a2e39]" />
+                            <TopIconButton label="Zoom out (-)" onClick={() => zoomChart(1.25)}><ZoomOut size={17} /></TopIconButton>
+                            <TopIconButton label="Zoom in (+)" onClick={() => zoomChart(0.8)}><ZoomIn size={17} /></TopIconButton>
+                            <TopIconButton label="Reset chart view (R)" onClick={resetView}><RotateCcw size={17} /></TopIconButton>
+                            <TopIconButton label="Go to realtime (G)" onClick={goToRealtime}><ChevronsRight size={18} /></TopIconButton>
+                            <TopIconButton
+                                label={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen chart (F)'}
+                                onClick={() => setIsFullscreen((fullscreen) => !fullscreen)}
+                            >
+                                {isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+                            </TopIconButton>
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2 bg-[var(--card-bg)] px-3 py-1.5 rounded-lg border border-[var(--card-border)]">
-                        <div className="w-3 h-3 rounded-sm bg-[#ff4757]" />
-                        <span>Supply (S)</span>
+
+                    <div className="flex min-h-0 flex-1">
+                        <aside className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[#2a2e39] bg-[#131722] py-2" role="toolbar" aria-label="Chart drawing tools">
+                            <ToolButton label="Cursor (Esc)" active={drawingMode === 'cursor'} onClick={() => setMode('cursor')}><MousePointer2 size={18} /></ToolButton>
+                            <ToolButton label="Trend line (T)" active={drawingMode === 'trend'} onClick={() => setMode('trend')}><TrendingUp size={18} /></ToolButton>
+                            <ToolButton label="Horizontal line (H)" active={drawingMode === 'horizontal'} onClick={() => setMode('horizontal')}><Minus size={19} /></ToolButton>
+                            <ToolButton label="Fibonacci retracement (B)" active={drawingMode === 'fibonacci'} onClick={() => setMode('fibonacci')}><GalleryVerticalEnd size={18} /></ToolButton>
+                            <div className="my-1 h-px w-7 bg-[#2a2e39]" />
+                            <ToolButton label="Auto Fibonacci" active={showAutoFib} onClick={toggleAutoFib}><Activity size={18} /></ToolButton>
+                            <ToolButton label="Supply and demand zones" active={showZones} onClick={handleToggleZones}><Layers3 size={18} /></ToolButton>
+                            <ToolButton label="Magnet mode (M)" active={magnetEnabled} onClick={toggleMagnet}><Magnet size={18} /></ToolButton>
+                            <ToolButton label="Keep drawing" active={keepDrawing} onClick={toggleKeepDrawing}><Repeat2 size={18} /></ToolButton>
+                            <ToolButton
+                                label={drawingsVisible ? 'Hide manual drawings' : 'Show manual drawings'}
+                                active={!drawingsVisible}
+                                onClick={() => setDrawingsVisible((visible) => !visible)}
+                            >
+                                {drawingsVisible ? <Eye size={18} /> : <EyeOff size={18} />}
+                            </ToolButton>
+                            <div className="my-1 h-px w-7 bg-[#2a2e39]" />
+                            <ToolButton label="Undo drawing" active={false} toggle={false} disabled={drawings.length === 0 && !draftAnchor} onClick={undoDrawing}><Undo2 size={18} /></ToolButton>
+                            <ToolButton label="Redo drawing" active={false} toggle={false} disabled={redoStack.length === 0} onClick={redoDrawing}><Redo2 size={18} /></ToolButton>
+                            <ToolButton label="Remove selected drawing" active={false} toggle={false} disabled={!selectedDrawingId} onClick={deleteSelectedDrawing}><Trash2 size={18} /></ToolButton>
+                            <ToolButton label="Clear all drawings" active={false} toggle={false} onClick={clearDrawings}><GalleryVerticalEnd size={18} /></ToolButton>
+                        </aside>
+
+                        <div
+                            ref={plotAreaRef}
+                            className={`relative min-w-0 flex-1 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] ${drawingMode === 'cursor' ? '' : 'cursor-crosshair'}`}
+                            data-testid="chart-plot-area"
+                            tabIndex={0}
+                            aria-label="Interactive trading chart. Use the mouse wheel to zoom, drag to pan, or use the drawing toolbar."
+                            onKeyDown={handleChartKeyDown}
+                            onPointerDownCapture={handlePointerDownCapture}
+                            onPointerMoveCapture={handlePointerMoveCapture}
+                            onPointerUpCapture={handlePointerUpCapture}
+                            onPointerCancelCapture={handlePointerUpCapture}
+                            onDoubleClickCapture={() => drawingModeRef.current === 'cursor' && resetView()}
+                        >
+                            <div ref={containerRef} className="chart-container h-full" />
+
+                            <ChartOverlaySvg ref={overlayHandleRef} />
+
+                            {isLoading && (
+                                <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#131722]">
+                                    <div className="flex flex-col items-center gap-3 text-[#787b86]">
+                                        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2a2e39] border-t-[var(--accent)]" />
+                                        Loading verified Hyperliquid candles...
+                                    </div>
+                                </div>
+                            )}
+
+                            {drawingMode !== 'cursor' && (
+                                <div className="pointer-events-none absolute left-3 top-3 z-[4] rounded-md border border-[var(--accent)]/50 bg-[#131722]/95 px-3 py-2 text-xs text-[#d1d4dc] shadow-lg" data-testid="drawing-mode-banner">
+                                    <div className="font-semibold uppercase tracking-wider text-[var(--accent)]">
+                                        {drawingMode === 'horizontal' ? 'Horizontal line' : drawingMode === 'fibonacci' ? 'Fibonacci retracement' : 'Trend line'}
+                                    </div>
+                                    <div className="mt-1 text-[#9598a1]">
+                                        {draftAnchor ? 'Click the second anchor to finish.' : drawingMode === 'horizontal' ? 'Click one price level.' : 'Click the first anchor.'}
+                                        {magnetEnabled ? ' Magnet is on.' : ''}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2 bg-[var(--card-bg)] px-3 py-1.5 rounded-lg border border-[var(--card-border)]">
-                        <div className="w-3 h-3 rounded-sm bg-[#666666]" />
-                        <span>Event (EVT)</span>
+
+                    <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-[#2a2e39] bg-[#131722] px-3 py-1.5 text-[11px]">
+                        <div
+                            className="min-w-0 truncate text-[#9598a1]"
+                            role="status"
+                            aria-live="polite"
+                            data-testid="chart-tool-status"
+                        >
+                            {toolMessage}
+                        </div>
+                        {signalToPlot ? (
+                            <div className="flex flex-wrap items-center gap-3 font-mono" data-testid="plotted-setup">
+                                <span className="font-sans font-semibold uppercase tracking-wider text-[var(--accent)]">Plotted {signalToPlot.direction} {signalToPlot.coin}</span>
+                                <span className="text-[#fbbf24]">Entry {formatPrice(signalToPlot.entryPrice)}</span>
+                                <span className="text-[#ef5350]">Stop {formatPrice(signalToPlot.stopLoss)}</span>
+                                <span className="text-[#26a69a]">Target {formatPrice(signalToPlot.takeProfit)}</span>
+                                <span className="text-[#d1d4dc]">1:{signalToPlot.riskRewardRatio.toFixed(2)} R:R</span>
+                                <span className="font-sans text-[#9598a1]">
+                                    EVENT = broken zone that proved momentum · ORIGIN = zone your limit rests in
+                                </span>
+                                <span className="flex items-center gap-1.5 font-sans text-[#9598a1]" data-testid="setup-trigger-legend">
+                                    <span className="w-4 shrink-0 border-t border-dashed border-[#a78bfa]" aria-hidden="true" />
+                                    Purple dashed line = break confirmed.
+                                    <span className="h-2 w-2 shrink-0 rounded-full bg-[#fbbf24]" aria-hidden="true" />
+                                    Yellow dot = setup trigger. Entry fills only if price returns to the yellow line.
+                                </span>
+                            </div>
+                        ) : (
+                            <div className="hidden items-center gap-3 text-[#5d606b] md:flex">
+                                <span>T/H/B draw</span><span>M magnet</span><span>R reset</span><span>G realtime</span><span>+/- zoom</span>
+                            </div>
+                        )}
                     </div>
                 </div>
-            )}
-
-            {/* Zone count badge */}
-            <div className="absolute top-4 right-4 bg-[var(--card-bg)] px-3 py-1.5 rounded-lg border border-[var(--card-border)] text-xs">
-                <span className="text-[var(--text-muted)]">Zones: </span>
-                <span className="font-semibold">{zones.filter(z => z.status !== 'BROKEN').length}</span>
             </div>
-        </div>
+        </section>
+    );
+}
+
+function ToolButton({
+    label,
+    active,
+    toggle = true,
+    disabled = false,
+    onClick,
+    children,
+}: {
+    label: string;
+    active: boolean;
+    toggle?: boolean;
+    disabled?: boolean;
+    onClick: () => void;
+    children: React.ReactNode;
+}) {
+    return (
+        <button
+            type="button"
+            title={label}
+            aria-label={label}
+            onClick={onClick}
+            disabled={disabled}
+            aria-pressed={toggle ? active : undefined}
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
+                active
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'text-[#9598a1] hover:bg-[#2a2e39] hover:text-white'
+            }`}
+        >
+            {children}
+        </button>
+    );
+}
+
+function TopIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+    return (
+        <button
+            type="button"
+            title={label}
+            aria-label={label}
+            onClick={onClick}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[#9598a1] transition-colors hover:bg-[#2a2e39] hover:text-white"
+        >
+            {children}
+        </button>
+    );
+}
+
+function IndicatorButton({ label, active, onClick, children }: { label: string; active: boolean; onClick: () => void; children: React.ReactNode }) {
+    return (
+        <button
+            type="button"
+            title={label}
+            aria-label={label}
+            onClick={onClick}
+            aria-pressed={active}
+            className={`flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-[11px] font-medium transition-colors ${
+                active ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'text-[#9598a1] hover:bg-[#2a2e39] hover:text-white'
+            }`}
+        >
+            {children}
+        </button>
     );
 }
