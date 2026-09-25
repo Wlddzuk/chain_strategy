@@ -12,6 +12,7 @@ import {
     ISeriesApi,
     ISeriesMarkersPluginApi,
     LineSeries,
+    type Logical,
     LineStyle,
     MouseEventParams,
     SeriesMarker,
@@ -47,6 +48,7 @@ import {
     ZoomOut,
 } from 'lucide-react';
 import ChartOverlaySvg, {
+    estimateLabelWidth,
     type OverlayHandle,
     type OverlayModel,
 } from '@/components/chart-overlay-svg';
@@ -58,7 +60,22 @@ import {
     type RsiIncrementalState,
 } from '@/lib/chart/indicators';
 import { canUpdateLastCandle, shouldFitAfterRebuild } from '@/lib/chart/candle-updates';
+import {
+    createDefaultPosition,
+    editPosition,
+    evaluatePosition,
+    hitTestPosition,
+    logicalToTime,
+    positionGeometry,
+    riskRewardRatio,
+    timeToLogical,
+    type PositionHandle,
+    type PositionLevels,
+    type PositionSide,
+    type TimeAnchor,
+} from '@/lib/chart/position-tool';
 import { detectEngulfingPatterns, isDecisiveEngulfing } from '@/lib/trading/pattern-detector';
+import { calculatePositionSize } from '@/lib/trading/risk-calculator';
 import { calculateRSI, findTripleDivergences } from '@/lib/trading/rsi-divergence';
 import { Candle, ChainSignal, RsiDivergence, Zone, getTimeframeMs } from '@/lib/trading/types';
 import { findSupersededZoneIds } from '@/lib/trading/zone-marker';
@@ -77,7 +94,7 @@ interface ChartProps {
     onToggleBollinger: () => void;
 }
 
-type DrawingMode = 'cursor' | 'trend' | 'horizontal' | 'fibonacci';
+type DrawingMode = 'cursor' | 'trend' | 'horizontal' | 'fibonacci' | PositionSide;
 
 interface DrawingPoint {
     time: number;
@@ -89,6 +106,8 @@ interface Drawing {
     type: Exclude<DrawingMode, 'cursor'>;
     start: DrawingPoint;
     end?: DrawingPoint;
+    /** Long/short positions: start = entry, end = target price at the box's right edge. */
+    stop?: number;
 }
 
 interface OverlayInputs {
@@ -106,6 +125,11 @@ interface OverlayInputs {
     showDivergences: boolean;
     wickLevels: WickMidpoint[];
     showWickLevels: boolean;
+    candles: Candle[];
+    timeAnchor: TimeAnchor | null;
+    positionRisk: { equity: number; riskPercent: number };
+    hoveredDrawingId?: string | null;
+    positionPreview?: PositionLevels | null;
 }
 
 interface DragState {
@@ -113,6 +137,15 @@ interface DragState {
     origin: Drawing;
     start: DrawingPoint;
     pointerId: number;
+    /** Set when dragging part of a long/short position. */
+    handle?: PositionHandle;
+}
+
+/** Pointer state that changes every frame; kept out of React so dragging stays at 60fps. */
+interface LiveInteraction {
+    drawing: Drawing | null;
+    hoverId: string | null;
+    preview: PositionLevels | null;
 }
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
@@ -133,6 +166,18 @@ const ZONE_COLORS = {
 };
 
 // Older zones a newer engulfing has superseded: still drawn, but muted.
+const POSITION_COLORS = {
+    reward: 'rgba(0, 210, 106, 0.2)',
+    rewardActive: 'rgba(0, 210, 106, 0.28)',
+    risk: 'rgba(255, 71, 87, 0.2)',
+    riskActive: 'rgba(255, 71, 87, 0.28)',
+    target: '#00d26a',
+    stop: '#ff4757',
+    entry: '#d1d4dc',
+    targetLabel: 'rgba(0, 150, 76, 0.94)',
+    stopLabel: 'rgba(214, 48, 64, 0.94)',
+};
+
 const SUPERSEDED_ZONE_COLORS = {
     DEMAND: { fill: 'rgba(0, 210, 106, 0.035)', border: 'rgba(0, 210, 106, 0.32)' },
     SUPPLY: { fill: 'rgba(255, 71, 87, 0.035)', border: 'rgba(255, 71, 87, 0.32)' },
@@ -336,13 +381,97 @@ function getAutoFibAnchors(candles: Candle[]): { start: DrawingPoint; end: Drawi
 function isStoredDrawing(value: unknown): value is Drawing {
     if (!value || typeof value !== 'object') return false;
     const drawing = value as Partial<Drawing>;
-    return Boolean(
+    const hasStart = Boolean(
         drawing.id &&
         drawing.type &&
         drawing.start &&
         Number.isFinite(drawing.start.time) &&
         Number.isFinite(drawing.start.price)
     );
+    if (!hasStart || (drawing.type !== 'long' && drawing.type !== 'short')) return hasStart;
+    return Boolean(
+        drawing.end &&
+        Number.isFinite(drawing.end.time) &&
+        Number.isFinite(drawing.end.price) &&
+        Number.isFinite(drawing.stop)
+    );
+}
+
+function positionOf(drawing: Drawing): PositionLevels | null {
+    if ((drawing.type !== 'long' && drawing.type !== 'short') || !drawing.end || drawing.stop === undefined) return null;
+    return {
+        side: drawing.type,
+        entryTime: drawing.start.time,
+        endTime: drawing.end.time,
+        entry: drawing.start.price,
+        stop: drawing.stop,
+        target: drawing.end.price,
+    };
+}
+
+function positionDrawing(id: string, levels: PositionLevels): Drawing {
+    return {
+        id,
+        type: levels.side,
+        start: { time: levels.entryTime, price: levels.entry },
+        end: { time: levels.endTime, price: levels.target },
+        stop: levels.stop,
+    };
+}
+
+function describePosition(levels: PositionLevels): string {
+    return `${levels.side === 'long' ? 'Long' : 'Short'} · entry ${formatPrice(levels.entry)} · stop ${formatPrice(levels.stop)} · target ${formatPrice(levels.target)} · R:R ${riskRewardRatio(levels).toFixed(2)}`;
+}
+
+function formatQuantity(quantity: number): string {
+    if (quantity >= 100) return quantity.toFixed(0);
+    if (quantity >= 1) return quantity.toFixed(2);
+    return quantity.toPrecision(3);
+}
+
+function formatUsd(amount: number): string {
+    return `$${Math.round(amount).toLocaleString('en-US')}`;
+}
+
+function formatSignedPercent(value: number): string {
+    return `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(2)}%`;
+}
+
+function formatR(r: number): string {
+    return `${r >= 0 ? '+' : '−'}${Math.abs(r).toFixed(2)}R`;
+}
+
+/** Time-to-x through logical indexes, so positions can extend past the last candle. */
+function anchoredTimeX(chart: IChartApi, anchor: TimeAnchor | null, time: number): number | null {
+    if (!anchor) return chart.timeScale().timeToCoordinate((time / 1000) as Time);
+    return chart.timeScale().logicalToCoordinate(timeToLogical(anchor, time) as Logical);
+}
+
+function findPositionAtPoint(
+    chart: IChartApi,
+    series: ISeriesApi<'Candlestick'>,
+    anchor: TimeAnchor | null,
+    drawings: Drawing[],
+    x: number,
+    y: number
+): { drawing: Drawing; handle: PositionHandle } | null {
+    for (const drawing of [...drawings].reverse()) {
+        const levels = positionOf(drawing);
+        if (!levels) continue;
+        const geometry = positionGeometry(
+            levels,
+            (time) => anchoredTimeX(chart, anchor, time),
+            (price) => series.priceToCoordinate(price)
+        );
+        const handle = geometry && hitTestPosition(geometry, x, y);
+        if (handle) return { drawing, handle };
+    }
+    return null;
+}
+
+function positionCursor(handle: PositionHandle): string {
+    if (handle === 'body') return 'move';
+    return handle === 'width' ? 'ew-resize' : 'ns-resize';
 }
 
 function buildOverlayModel(
@@ -582,8 +711,146 @@ function buildOverlayModel(
         }
     };
 
+    const addPosition = (id: string, levels: PositionLevels, state: { active?: boolean; ghost?: boolean }) => {
+        const geometry = positionGeometry(levels, (time) => anchoredTimeX(chart, inputs.timeAnchor, time), priceY);
+        if (!geometry) return;
+        const { left, right, entryY, stopY, targetY } = geometry;
+        const opacity = state.ghost ? 0.55 : undefined;
+        const boxWidth = right - left;
+        const clampLabelY = (y: number) => Math.max(10, Math.min(y, mainPaneHeight - 10));
+
+        model.rects.push(
+            {
+                id: `${id}-reward`,
+                x: left,
+                y: Math.min(entryY, targetY),
+                width: boxWidth,
+                height: Math.abs(targetY - entryY),
+                fill: state.active ? POSITION_COLORS.rewardActive : POSITION_COLORS.reward,
+                opacity,
+            },
+            {
+                id: `${id}-risk`,
+                x: left,
+                y: Math.min(entryY, stopY),
+                width: boxWidth,
+                height: Math.abs(stopY - entryY),
+                fill: state.active ? POSITION_COLORS.riskActive : POSITION_COLORS.risk,
+                opacity,
+            }
+        );
+
+        // Replay the trade: shade how far price got and trace entry → exit (or → last close).
+        const outcome = state.ghost ? null : evaluatePosition(levels, inputs.candles);
+        if (outcome && outcome.state !== 'waiting') {
+            const fillX = anchoredTimeX(chart, inputs.timeAnchor, outcome.fillTime);
+            const exitTime = outcome.state === 'open' ? outcome.lastTime : outcome.exitTime;
+            const exitPrice = outcome.state === 'open' ? outcome.lastPrice : outcome.exitPrice;
+            const exitX = anchoredTimeX(chart, inputs.timeAnchor, exitTime);
+            const exitY = priceY(exitPrice);
+            if (fillX !== null && exitX !== null && exitY !== null) {
+                const color = outcome.r >= 0 ? POSITION_COLORS.target : POSITION_COLORS.stop;
+                model.rects.push({
+                    id: `${id}-progress`,
+                    x: fillX,
+                    y: Math.min(entryY, exitY),
+                    width: Math.max(1, exitX - fillX),
+                    height: Math.abs(exitY - entryY),
+                    fill: color,
+                    opacity: 0.16,
+                });
+                model.lines.push({ id: `${id}-path`, x1: fillX, y1: entryY, x2: exitX, y2: exitY, color: POSITION_COLORS.entry, width: 1, dash: '3 3', opacity: 0.85 });
+                model.circles.push({ id: `${id}-exit`, x: exitX, y: exitY, radius: 3.5, fill: color, stroke: '#131722' });
+            }
+        }
+
+        model.lines.push(
+            { id: `${id}-target-edge`, x1: left, y1: targetY, x2: right, y2: targetY, color: POSITION_COLORS.target, width: 1, opacity },
+            { id: `${id}-stop-edge`, x1: left, y1: stopY, x2: right, y2: stopY, color: POSITION_COLORS.stop, width: 1, opacity },
+            { id: `${id}-entry-line`, x1: left, y1: entryY, x2: right, y2: entryY, color: POSITION_COLORS.entry, width: state.active ? 1.5 : 1, opacity }
+        );
+
+        const rr = riskRewardRatio(levels);
+        const { equity, riskPercent } = inputs.positionRisk;
+        const sizing = calculatePositionSize({ equity, riskPercent, leverage: 1, entryPrice: levels.entry, stopLoss: levels.stop });
+        const percentFromEntry = (price: number) => ((price - levels.entry) / levels.entry) * 100;
+        const labelX = Math.max(80, Math.min((left + right) / 2, plotWidth - 80));
+        const targetAbove = targetY < stopY;
+        const status = !outcome || outcome.state === 'waiting'
+            ? null
+            : outcome.state === 'target'
+                ? { text: 'Target hit', background: POSITION_COLORS.targetLabel }
+                : outcome.state === 'stop'
+                    ? { text: 'Stopped', background: POSITION_COLORS.stopLabel }
+                    : { text: `Open ${formatR(outcome.r)}`, background: outcome.r >= 0 ? POSITION_COLORS.targetLabel : POSITION_COLORS.stopLabel };
+        const sideLabel = levels.side === 'long' ? 'LONG' : 'SHORT';
+        const centerText = state.ghost
+            ? `Click to place ${sideLabel} · R:R ${rr.toFixed(2)}`
+            : `${sideLabel} · R:R ${rr.toFixed(2)}${status ? ` · ${status.text}` : ''}`;
+        const centerWidth = estimateLabelWidth(centerText, 11);
+        // Inside the box when it fits between the handles, else beside it so the handles stay clear.
+        const centerX = centerWidth <= boxWidth - 28
+            ? (left + right) / 2
+            : right + 12 + centerWidth <= plotWidth
+                ? right + 12 + (centerWidth / 2)
+                : left - 12 - centerWidth >= 0
+                    ? left - 12 - (centerWidth / 2)
+                    : (left + right) / 2;
+
+        model.texts.push(
+            {
+                id: `${id}-target-label`,
+                x: labelX,
+                y: clampLabelY(targetAbove ? targetY - 12 : targetY + 12),
+                text: `Target ${formatPrice(levels.target)} (${formatSignedPercent(percentFromEntry(levels.target))}) · +${formatUsd(sizing.riskAmount * rr)}`,
+                color: '#ffffff',
+                background: POSITION_COLORS.targetLabel,
+                size: 10,
+                weight: 600,
+                opacity,
+            },
+            {
+                id: `${id}-stop-label`,
+                x: labelX,
+                y: clampLabelY(targetAbove ? stopY + 12 : stopY - 12),
+                text: `Stop ${formatPrice(levels.stop)} (${formatSignedPercent(percentFromEntry(levels.stop))}) · −${formatUsd(sizing.riskAmount)} · Qty ${formatQuantity(sizing.positionSize)}`,
+                color: '#ffffff',
+                background: POSITION_COLORS.stopLabel,
+                size: 10,
+                weight: 600,
+                opacity,
+            },
+            {
+                id: `${id}-center-label`,
+                x: centerX,
+                y: entryY,
+                text: centerText,
+                color: '#ffffff',
+                background: status?.background ?? 'rgba(42, 46, 57, 0.95)',
+                size: 11,
+                weight: 700,
+                opacity,
+            }
+        );
+
+        if (state.active && !state.ghost) {
+            const handle = (part: string, x: number, y: number, stroke: string) => model.circles.push({
+                id: `${id}-${part}-handle`, x, y, radius: 5, fill: '#131722', stroke, strokeWidth: 2,
+            });
+            handle('target', left, targetY, POSITION_COLORS.target);
+            handle('stop', left, stopY, POSITION_COLORS.stop);
+            handle('entry', left, entryY, POSITION_COLORS.entry);
+            handle('width', right, entryY, CHART_ACCENT);
+        }
+    };
+
     if (inputs.drawingsVisible) for (const drawing of inputs.drawings) {
         const selected = drawing.id === inputs.selectedDrawingId;
+        const position = positionOf(drawing);
+        if (position) {
+            addPosition(drawing.id, position, { active: selected || drawing.id === inputs.hoveredDrawingId });
+            continue;
+        }
         const startX = timeX(drawing.start.time);
         const startY = priceY(drawing.start.price);
         if (startX === null || startY === null) continue;
@@ -619,6 +886,10 @@ function buildOverlayModel(
         addFib('auto-fib', inputs.autoFib.start, inputs.autoFib.end, 'Auto Fib');
     }
 
+    if (inputs.positionPreview) {
+        addPosition('position-preview', inputs.positionPreview, { ghost: true });
+    }
+
     if (inputs.draftAnchor) {
         const x = timeX(inputs.draftAnchor.time);
         const y = priceY(inputs.draftAnchor.price);
@@ -644,6 +915,9 @@ export default function Chart({
     const plottedSignal = useTradingStore((state) => state.plottedSignal);
     const selectedCoin = useTradingStore((state) => state.selectedCoin);
     const selectedTimeframe = useTradingStore((state) => state.selectedTimeframe);
+    const accountEquity = useTradingStore((state) => state.settings.accountEquity);
+    const riskPercent = useTradingStore((state) => state.settings.riskPercent);
+    const stepMs = getTimeframeMs(selectedTimeframe);
     const containerRef = useRef<HTMLDivElement>(null);
     const plotAreaRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
@@ -682,7 +956,11 @@ export default function Chart({
         showDivergences: true,
         wickLevels: [],
         showWickLevels: true,
+        candles: [],
+        timeAnchor: null,
+        positionRisk: { equity: 0, riskPercent: 0 },
     });
+    const liveRef = useRef<LiveInteraction>({ drawing: null, hoverId: null, preview: null });
     const storageKey = `chain-trader-drawings:${selectedCoin}:${selectedTimeframe}`;
     const [drawingMode, setDrawingMode] = useState<DrawingMode>('cursor');
     const [drawings, setDrawings] = useState<Drawing[]>([]);
@@ -717,6 +995,11 @@ export default function Chart({
     const latestCandle = candles[candles.length - 1];
     const currentPrice = latestCandle?.close || 0;
     const firstCandleTime = candles[0]?.time ?? null;
+    const latestCandleTime = latestCandle?.time ?? null;
+    const timeAnchor = useMemo<TimeAnchor | null>(
+        () => latestCandleTime === null ? null : { time: latestCandleTime, index: candles.length - 1, stepMs },
+        [candles.length, latestCandleTime, stepMs]
+    );
     const chartZones = useMemo(() => getChartZones(zones), [zones]);
     const supersededZoneIds = useMemo(() => findSupersededZoneIds(chartZones), [chartZones]);
     const autoFib = useMemo(() => getAutoFibAnchors(candles), [candles]);
@@ -781,15 +1064,50 @@ export default function Chart({
             const series = seriesRef.current;
             const container = containerRef.current;
             if (!chart || !series || !container) return;
+            const inputs = overlayInputsRef.current;
+            const live = liveRef.current;
+            const liveDrawing = live.drawing;
             overlayHandleRef.current?.setModel(buildOverlayModel(
                 chart,
                 series,
                 container.clientWidth,
                 container.clientHeight,
-                overlayInputsRef.current
+                {
+                    ...inputs,
+                    drawings: liveDrawing
+                        ? inputs.drawings.map((drawing) => drawing.id === liveDrawing.id ? liveDrawing : drawing)
+                        : inputs.drawings,
+                    hoveredDrawingId: live.hoverId,
+                    positionPreview: live.preview,
+                }
             ));
         });
     }, []);
+
+    /** A default-sized position anchored at plot coordinates (x, y), snapped to the nearest bar. */
+    const positionPlacement = useCallback((side: PositionSide, x: number, y: number): PositionLevels | null => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        const loaded = candlesRef.current;
+        const last = loaded[loaded.length - 1];
+        if (!chart || !series || !last || y < 0 || y > series.getPane().getHeight()) return null;
+        const logical = chart.timeScale().coordinateToLogical(x);
+        const cursorPrice = series.coordinateToPrice(y);
+        if (logical === null || cursorPrice === null) return null;
+        const barIndex = Math.round(logical);
+        let price = Number(cursorPrice);
+        const bar = loaded[barIndex];
+        if (magnetEnabledRef.current && bar) {
+            price = [bar.open, bar.high, bar.low, bar.close]
+                .reduce((nearest, candidate) => Math.abs(candidate - price) < Math.abs(nearest - price) ? candidate : nearest);
+        }
+        if (!(price > 0)) return null;
+        const time = logicalToTime({ time: last.time, index: loaded.length - 1, stepMs }, barIndex);
+        // About a fifth of the visible bars, so the box reads at any zoom level.
+        const visible = chart.timeScale().getVisibleLogicalRange();
+        const bars = visible ? Math.min(200, Math.max(10, Math.round((visible.to - visible.from) * 0.2))) : undefined;
+        return createDefaultPosition(side, loaded, time, price, stepMs, bars);
+    }, [stepMs]);
 
     useEffect(() => {
         let secondFrame: number | null = null;
@@ -1349,8 +1667,24 @@ export default function Chart({
 
         const handleClick = (param: MouseEventParams<Time>) => {
             const activeMode = drawingModeRef.current;
-            if (activeMode === 'cursor' || !param.point || param.time === undefined) return;
+            if (activeMode === 'cursor' || !param.point) return;
             if ((param.paneIndex ?? 0) !== series.getPane().paneIndex()) return;
+            if (activeMode === 'long' || activeMode === 'short') {
+                const levels = positionPlacement(activeMode, param.point.x, param.point.y);
+                if (!levels) return;
+                const drawing = positionDrawing(drawingId(), levels);
+                liveRef.current.preview = null;
+                setDrawings((items) => [...items, drawing]);
+                setRedoStack([]);
+                setSelectedDrawingId(drawing.id);
+                if (!keepDrawingRef.current) {
+                    drawingModeRef.current = 'cursor';
+                    setDrawingMode('cursor');
+                }
+                setToolMessage(`${describePosition(levels)}. Drag the green edge for target, red edge for stop, right edge for length, or the box to move it.`);
+                return;
+            }
+            if (param.time === undefined) return;
             const price = series.coordinateToPrice(param.point.y);
             const time = typeof param.time === 'number' ? param.time * 1000 : NaN;
             if (price === null || !Number.isFinite(time)) return;
@@ -1404,7 +1738,7 @@ export default function Chart({
 
         chart.subscribeClick(handleClick);
         return () => chart.unsubscribeClick(handleClick);
-    }, []);
+    }, [positionPlacement]);
 
     useEffect(() => {
         overlayInputsRef.current = {
@@ -1422,9 +1756,12 @@ export default function Chart({
             showDivergences,
             wickLevels: shownWickLevels,
             showWickLevels,
+            candles,
+            timeAnchor,
+            positionRisk: { equity: accountEquity, riskPercent },
         };
         scheduleOverlay();
-    }, [autoFib, draftAnchor, drawings, drawingsVisible, chartZones, supersededZoneIds, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay, tripleDivergences, showDivergences, shownWickLevels, showWickLevels]);
+    }, [accountEquity, candles, riskPercent, timeAnchor, autoFib, draftAnchor, drawings, drawingsVisible, chartZones, supersededZoneIds, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay, tripleDivergences, showDivergences, shownWickLevels, showWickLevels]);
 
     const setMode = (mode: DrawingMode) => {
         drawingModeRef.current = mode;
@@ -1432,6 +1769,9 @@ export default function Chart({
         setDrawingMode(mode);
         setDraftAnchor(null);
         if (mode !== 'cursor') setSelectedDrawingId(null);
+        liveRef.current.preview = null;
+        liveRef.current.hoverId = null;
+        scheduleOverlay();
         setToolMessage(
             mode === 'cursor'
                 ? 'Cursor active — drag to pan, scroll to zoom.'
@@ -1439,7 +1779,9 @@ export default function Chart({
                     ? 'H-Line active — click the chart at the price level you want.'
                     : mode === 'trend'
                         ? 'Trend active — click a start point, then click an end point.'
-                        : 'Fib Draw active — click the swing start, then click the swing end.'
+                        : mode === 'fibonacci'
+                            ? 'Fib Draw active — click the swing start, then click the swing end.'
+                            : `${mode === 'long' ? 'Long' : 'Short'} position active — click your entry. Stop starts 1.5 average candles away, target at 2R.`
         );
     };
 
@@ -1502,6 +1844,30 @@ export default function Chart({
         return { time: time * 1000, price };
     };
 
+    /** Unsnapped time/price under the pointer, valid past the last candle and outside the pane. */
+    const positionPointFromPointer = (event: React.PointerEvent<HTMLDivElement>): DrawingPoint | null => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        const area = plotAreaRef.current;
+        if (!chart || !series || !area || !timeAnchor) return null;
+        const bounds = area.getBoundingClientRect();
+        const logical = chart.timeScale().coordinateToLogical(event.clientX - bounds.left);
+        const price = series.coordinateToPrice(event.clientY - bounds.top);
+        if (logical === null || price === null) return null;
+        return { time: logicalToTime(timeAnchor, logical), price: Number(price) };
+    };
+
+    const setDragCursor = (cursor: string | null) => {
+        const area = plotAreaRef.current;
+        if (!area) return;
+        if (cursor) {
+            area.dataset.dragCursor = cursor;
+            area.style.setProperty('--drag-cursor', cursor);
+        } else {
+            delete area.dataset.dragCursor;
+        }
+    };
+
     const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
         if (drawingModeRef.current !== 'cursor' || !drawingsVisible) return;
         plotAreaRef.current?.focus({ preventScroll: true });
@@ -1510,15 +1876,31 @@ export default function Chart({
         const area = plotAreaRef.current;
         if (!chart || !series || !area) return;
         const bounds = area.getBoundingClientRect();
+        const paneX = event.clientX - bounds.left;
         const paneY = event.clientY - bounds.top;
         if (paneY < 0 || paneY > series.getPane().getHeight()) return;
-        const hit = findDrawingAtPoint(
-            chart,
-            series,
-            drawingsRef.current,
-            event.clientX - bounds.left,
-            paneY
-        );
+
+        const positionHit = findPositionAtPoint(chart, series, timeAnchor, drawingsRef.current, paneX, paneY);
+        if (positionHit) {
+            const start = positionPointFromPointer(event);
+            if (!start) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            dragRef.current = { id: positionHit.drawing.id, origin: positionHit.drawing, start, pointerId: event.pointerId, handle: positionHit.handle };
+            setDragCursor(positionHit.handle === 'body' ? 'grabbing' : positionCursor(positionHit.handle));
+            setSelectedDrawingId(positionHit.drawing.id);
+            setToolMessage(
+                positionHit.handle === 'body'
+                    ? 'Position selected — drag to move it, or press Delete to remove it.'
+                    : positionHit.handle === 'width'
+                        ? 'Dragging the position length.'
+                        : `Dragging the ${positionHit.handle} — R:R updates live.`
+            );
+            return;
+        }
+
+        const hit = findDrawingAtPoint(chart, series, drawingsRef.current, paneX, paneY);
         if (!hit) {
             setSelectedDrawingId(null);
             return;
@@ -1533,21 +1915,69 @@ export default function Chart({
         setToolMessage('Drawing selected — drag to move it, or press Delete to remove it.');
     };
 
+    const handlePointerHover = (event: React.PointerEvent<HTMLDivElement>) => {
+        const chart = chartRef.current;
+        const series = seriesRef.current;
+        const area = plotAreaRef.current;
+        if (!chart || !series || !area) return;
+        const bounds = area.getBoundingClientRect();
+        const x = event.clientX - bounds.left;
+        const y = event.clientY - bounds.top;
+        const mode = drawingModeRef.current;
+        const live = liveRef.current;
+
+        if (mode === 'long' || mode === 'short') {
+            live.preview = positionPlacement(mode, x, y);
+            scheduleOverlay();
+            return;
+        }
+        if (mode !== 'cursor' || !drawingsVisible) return;
+        const hit = findPositionAtPoint(chart, series, timeAnchor, drawingsRef.current, x, y);
+        setDragCursor(hit ? positionCursor(hit.handle) : null);
+        const hoverId = hit?.drawing.id ?? null;
+        if (hoverId !== live.hoverId) {
+            live.hoverId = hoverId;
+            scheduleOverlay();
+        }
+    };
+
+    const handlePointerLeave = () => {
+        if (dragRef.current) return;
+        const live = liveRef.current;
+        if (!live.preview && !live.hoverId) return;
+        live.preview = null;
+        live.hoverId = null;
+        setDragCursor(null);
+        scheduleOverlay();
+    };
+
     const handlePointerMoveCapture = (event: React.PointerEvent<HTMLDivElement>) => {
         const drag = dragRef.current;
-        if (!drag) return;
+        if (!drag) {
+            handlePointerHover(event);
+            return;
+        }
+
+        if (drag.handle) {
+            const origin = positionOf(drag.origin);
+            const point = positionPointFromPointer(event);
+            if (!origin || !point) return;
+            event.preventDefault();
+            event.stopPropagation();
+            liveRef.current.drawing = positionDrawing(drag.id, editPosition(origin, drag.handle, drag.start, point, stepMs));
+            scheduleOverlay();
+            return;
+        }
+
         const point = pointFromPointer(event);
         if (!point) return;
         event.preventDefault();
         event.stopPropagation();
         const timeDelta = point.time - drag.start.time;
         const priceDelta = point.price - drag.start.price;
-        setDrawings((items) => items.map((drawing) => {
-            if (drawing.id !== drag.id) return drawing;
-            if (drawing.type === 'horizontal') {
-                return { ...drag.origin, start: { ...drag.origin.start, price: drag.origin.start.price + priceDelta } };
-            }
-            return {
+        liveRef.current.drawing = drag.origin.type === 'horizontal'
+            ? { ...drag.origin, start: { ...drag.origin.start, price: drag.origin.start.price + priceDelta } }
+            : {
                 ...drag.origin,
                 start: {
                     time: drag.origin.start.time + timeDelta,
@@ -1558,19 +1988,30 @@ export default function Chart({
                     price: drag.origin.end.price + priceDelta,
                 } : undefined,
             };
-        }));
+        scheduleOverlay();
     };
 
     const handlePointerUpCapture = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (!dragRef.current) return;
+        const drag = dragRef.current;
+        if (!drag) return;
         event.preventDefault();
         event.stopPropagation();
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
         }
         dragRef.current = null;
+        setDragCursor(drag.handle ? positionCursor(drag.handle) : null);
+        const moved = liveRef.current.drawing;
+        liveRef.current.drawing = null;
+        if (!moved) return;
+        // Commit synchronously to the overlay too, so the frame before React re-renders doesn't snap back.
+        const next = drawingsRef.current.map((drawing) => drawing.id === moved.id ? moved : drawing);
+        drawingsRef.current = next;
+        overlayInputsRef.current = { ...overlayInputsRef.current, drawings: next };
+        setDrawings(next);
         setRedoStack([]);
-        setToolMessage('Drawing moved. Changes are saved for this market and timeframe.');
+        const position = positionOf(moved);
+        setToolMessage(position ? `${describePosition(position)}. Saved for this market and timeframe.` : 'Drawing moved. Changes are saved for this market and timeframe.');
     };
 
     const handleChartKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1583,6 +2024,8 @@ export default function Chart({
             setSelectedDrawingId(null);
             drawingModeRef.current = 'cursor';
             setDrawingMode('cursor');
+            liveRef.current.preview = null;
+            scheduleOverlay();
             setToolMessage('Cursor active — drag to pan, scroll to zoom.');
             return;
         }
@@ -1603,6 +2046,8 @@ export default function Chart({
         else if (key === 't') { event.preventDefault(); setMode('trend'); }
         else if (key === 'h') { event.preventDefault(); setMode('horizontal'); }
         else if (key === 'b') { event.preventDefault(); setMode('fibonacci'); }
+        else if (key === 'l') { event.preventDefault(); setMode('long'); }
+        else if (key === 's') { event.preventDefault(); setMode('short'); }
         else if (key === '+' || key === '=') { event.preventDefault(); zoomChart(0.8); }
         else if (key === '-') { event.preventDefault(); zoomChart(1.25); }
     };
@@ -1763,6 +2208,8 @@ export default function Chart({
                             <ToolButton label="Trend line (T)" active={drawingMode === 'trend'} onClick={() => setMode('trend')}><TrendingUp size={18} /></ToolButton>
                             <ToolButton label="Horizontal line (H)" active={drawingMode === 'horizontal'} onClick={() => setMode('horizontal')}><Minus size={19} /></ToolButton>
                             <ToolButton label="Fibonacci retracement (B)" active={drawingMode === 'fibonacci'} onClick={() => setMode('fibonacci')}><GalleryVerticalEnd size={18} /></ToolButton>
+                            <ToolButton label="Long position (L)" active={drawingMode === 'long'} onClick={() => setMode('long')}><PositionIcon side="long" /></ToolButton>
+                            <ToolButton label="Short position (S)" active={drawingMode === 'short'} onClick={() => setMode('short')}><PositionIcon side="short" /></ToolButton>
                             <div className="my-1 h-px w-7 bg-[#2a2e39]" />
                             <ToolButton label="Auto Fibonacci" active={showAutoFib} onClick={toggleAutoFib}><Activity size={18} /></ToolButton>
                             <ToolButton label="Supply and demand zones" active={showZones} onClick={handleToggleZones}><Layers3 size={18} /></ToolButton>
@@ -1787,7 +2234,7 @@ export default function Chart({
 
                         <div
                             ref={plotAreaRef}
-                            className={`relative min-w-0 flex-1 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] ${drawingMode === 'cursor' ? '' : 'cursor-crosshair'}`}
+                            className={`chart-plot-area relative min-w-0 flex-1 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] ${drawingMode === 'cursor' ? '' : 'cursor-crosshair'}`}
                             data-testid="chart-plot-area"
                             tabIndex={0}
                             aria-label="Interactive trading chart. Use the mouse wheel to zoom, drag to pan, or use the drawing toolbar."
@@ -1796,6 +2243,7 @@ export default function Chart({
                             onPointerMoveCapture={handlePointerMoveCapture}
                             onPointerUpCapture={handlePointerUpCapture}
                             onPointerCancelCapture={handlePointerUpCapture}
+                            onPointerLeave={handlePointerLeave}
                             onDoubleClickCapture={() => drawingModeRef.current === 'cursor' && resetView()}
                         >
                             <div ref={containerRef} className="chart-container h-full" />
@@ -1814,10 +2262,22 @@ export default function Chart({
                             {drawingMode !== 'cursor' && (
                                 <div className="pointer-events-none absolute left-3 top-3 z-[4] rounded-md border border-[var(--accent)]/50 bg-[#131722]/95 px-3 py-2 text-xs text-[#d1d4dc] shadow-lg" data-testid="drawing-mode-banner">
                                     <div className="font-semibold uppercase tracking-wider text-[var(--accent)]">
-                                        {drawingMode === 'horizontal' ? 'Horizontal line' : drawingMode === 'fibonacci' ? 'Fibonacci retracement' : 'Trend line'}
+                                        {drawingMode === 'horizontal'
+                                            ? 'Horizontal line'
+                                            : drawingMode === 'fibonacci'
+                                                ? 'Fibonacci retracement'
+                                                : drawingMode === 'long'
+                                                    ? 'Long position'
+                                                    : drawingMode === 'short' ? 'Short position' : 'Trend line'}
                                     </div>
                                     <div className="mt-1 text-[#9598a1]">
-                                        {draftAnchor ? 'Click the second anchor to finish.' : drawingMode === 'horizontal' ? 'Click one price level.' : 'Click the first anchor.'}
+                                        {draftAnchor
+                                            ? 'Click the second anchor to finish.'
+                                            : drawingMode === 'horizontal'
+                                                ? 'Click one price level.'
+                                                : drawingMode === 'long' || drawingMode === 'short'
+                                                    ? 'Click your entry — then drag the edges to set stop and target.'
+                                                    : 'Click the first anchor.'}
                                         {magnetEnabled ? ' Magnet is on.' : ''}
                                     </div>
                                 </div>
@@ -1856,7 +2316,7 @@ export default function Chart({
                                 <span><b className="text-[#00d26a]">E</b> engulfing (swallowed candle)</span>
                                 <span><b className="text-[#22c55e]">···</b> 3-touch RSI div</span>
                                 <span><b className="text-[#22d3ee]">- -</b> 50% wick</span>
-                                <span>T/H/B draw</span><span>M magnet</span><span>R reset</span><span>G realtime</span><span>+/- zoom</span>
+                                <span>T/H/B draw</span><span>L/S position</span><span>M magnet</span><span>R reset</span><span>G realtime</span><span>+/- zoom</span>
                             </div>
                         )}
                     </div>
@@ -1897,6 +2357,32 @@ function ToolButton({
         >
             {children}
         </button>
+    );
+}
+
+/** Mirrors TradingView's forecasting icons: reward side carries the letter. */
+function PositionIcon({ side }: { side: PositionSide }) {
+    const letterY = side === 'long' ? 6.4 : 13.6;
+    return (
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+            <circle cx="3" cy="2.5" r="1.5" />
+            <path d="M4.5 2.5H18" />
+            <path d="M6.5 10H18" />
+            <circle cx="3" cy="17.5" r="1.5" />
+            <path d="M4.5 17.5H18" />
+            <text
+                x="12.25"
+                y={letterY}
+                fill="currentColor"
+                stroke="none"
+                fontSize="6"
+                fontWeight="700"
+                textAnchor="middle"
+                dominantBaseline="central"
+            >
+                {side === 'long' ? 'L' : 'S'}
+            </text>
+        </svg>
     );
 }
 
