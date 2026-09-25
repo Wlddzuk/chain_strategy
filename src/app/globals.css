@@ -431,3 +431,9 @@ body {
     min-height: 300px;
   }
 }
+
+/* Chart position tool: resize/move cursors must beat lightweight-charts' own canvas cursor. */
+.chart-plot-area[data-drag-cursor],
+.chart-plot-area[data-drag-cursor] * {
+  cursor: var(--drag-cursor) !important;
+}

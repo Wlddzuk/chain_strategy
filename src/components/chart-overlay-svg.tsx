@@ -9,6 +9,8 @@ export interface OverlayRect {
     width: number;
     height: number;
     fill: string;
+    stroke?: string;
+    opacity?: number;
 }
 
 export interface OverlayLine {
@@ -31,6 +33,9 @@ export interface OverlayText {
     color: string;
     size?: number;
     weight?: number;
+    opacity?: number;
+    /** Draws the text as a pill: `x`/`y` become the pill's centre. */
+    background?: string;
 }
 
 export interface OverlayCircle {
@@ -40,6 +45,8 @@ export interface OverlayCircle {
     radius: number;
     fill: string;
     stroke?: string;
+    strokeWidth?: number;
+    opacity?: number;
 }
 
 export interface OverlayModel {
@@ -63,6 +70,11 @@ const EMPTY_MODEL: OverlayModel = {
     texts: [],
     circles: [],
 };
+
+// No DOM measuring per frame: an average glyph is ~0.6em wide in the UI font.
+export function estimateLabelWidth(text: string, size: number): number {
+    return (text.length * size * 0.6) + 14;
+}
 
 const ChartOverlaySvg = forwardRef<OverlayHandle>(function ChartOverlaySvg(_, ref) {
     const [overlay, setOverlay] = useState<OverlayModel>(EMPTY_MODEL);
@@ -101,6 +113,8 @@ const ChartOverlaySvg = forwardRef<OverlayHandle>(function ChartOverlaySvg(_, re
                     width={rect.width}
                     height={rect.height}
                     fill={rect.fill}
+                    stroke={rect.stroke}
+                    opacity={rect.opacity}
                 />
             ))}
             {overlay.lines.map((line) => (
@@ -117,20 +131,45 @@ const ChartOverlaySvg = forwardRef<OverlayHandle>(function ChartOverlaySvg(_, re
                     strokeOpacity={line.opacity}
                 />
             ))}
-            {overlay.texts.map((item) => (
-                <text
-                    key={item.id}
-                    data-overlay-id={item.id}
-                    data-chart-signal-level={item.id.startsWith('signal-') ? item.text : undefined}
-                    x={item.x}
-                    y={item.y}
-                    fill={item.color}
-                    fontSize={item.size ?? 10}
-                    fontWeight={item.weight}
-                >
-                    {item.text}
-                </text>
-            ))}
+            {overlay.texts.map((item) => {
+                const size = item.size ?? 10;
+                if (!item.background) {
+                    return (
+                        <text
+                            key={item.id}
+                            data-overlay-id={item.id}
+                            data-chart-signal-level={item.id.startsWith('signal-') ? item.text : undefined}
+                            x={item.x}
+                            y={item.y}
+                            fill={item.color}
+                            fontSize={size}
+                            fontWeight={item.weight}
+                            opacity={item.opacity}
+                        >
+                            {item.text}
+                        </text>
+                    );
+                }
+                const width = estimateLabelWidth(item.text, size);
+                const height = size + 10;
+                return (
+                    <g key={item.id} data-overlay-id={item.id} opacity={item.opacity}>
+                        <rect x={item.x - (width / 2)} y={item.y - (height / 2)} width={width} height={height} rx={4} fill={item.background} />
+                        <text
+                            x={item.x}
+                            y={item.y}
+                            fill={item.color}
+                            fontSize={size}
+                            fontWeight={item.weight}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{ fontVariantNumeric: 'tabular-nums' }}
+                        >
+                            {item.text}
+                        </text>
+                    </g>
+                );
+            })}
             {overlay.circles.map((circle) => (
                 <circle
                     key={circle.id}
@@ -140,7 +179,8 @@ const ChartOverlaySvg = forwardRef<OverlayHandle>(function ChartOverlaySvg(_, re
                     r={circle.radius}
                     fill={circle.fill}
                     stroke={circle.stroke}
-                    strokeWidth={circle.stroke ? 1 : 0}
+                    strokeWidth={circle.stroke ? circle.strokeWidth ?? 1 : 0}
+                    opacity={circle.opacity}
                 />
             ))}
         </svg>
