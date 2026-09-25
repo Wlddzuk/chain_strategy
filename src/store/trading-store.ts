@@ -320,7 +320,7 @@ function collectBreakFormingAlerts(
 ): TradeAlertEvent[] {
     if (!state.settings.alertsEnabled || !state.settings.breakFormingAlertsEnabled) return [];
 
-    const alerts = deriveFormingSetups(state.strategyStates, prices)
+    const alerts = deriveFormingSetups(state.strategyStates, prices, { includeStaleZones: true })
         .filter((setup) => setup.breakForming)
         .flatMap((setup) => {
             const key = getBreakFormingAlertKey(
