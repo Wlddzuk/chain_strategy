@@ -35,8 +35,8 @@
   --hairline: rgba(255, 255, 255, 0.07);
   --hairline-strong: rgba(255, 255, 255, 0.12);
   --material-chrome: rgba(10, 10, 12, 0.72);
-  --material-popover: rgba(24, 24, 27, 0.82);
-  --material-sheet: rgba(18, 18, 20, 0.9);
+  --material-popover: rgba(24, 24, 27, 0.96);
+  --material-sheet: rgba(18, 18, 20, 0.97);
 
   /* Motion: iOS sheet curve (critically damped feel), quick press response. */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -542,6 +542,11 @@ body {
 
 [data-state='closed'] > .sheet-panel {
   transition-duration: 300ms;
+}
+
+/* Never lock out input while the sheet animates away. */
+[data-state='closed'] {
+  pointer-events: none;
 }
 
 /* ---------- Controls ---------- */

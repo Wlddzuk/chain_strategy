@@ -154,14 +154,14 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
 
                 <nav
                     aria-label="Guide sections"
-                    className="no-scrollbar flex gap-1.5 overflow-x-auto border-b border-[var(--hairline)] px-5 pb-3 pt-4 sm:px-8"
+                    className="flex flex-wrap gap-1.5 border-b border-[var(--hairline)] px-5 pb-3 pt-4 sm:px-8"
                 >
                     {GUIDE_SECTIONS.map(([section, label]) => (
                         <button
                             key={section}
                             type="button"
                             onClick={() => jumpTo(section)}
-                            className="chip shrink-0"
+                            className="chip"
                         >
                             {label}
                         </button>

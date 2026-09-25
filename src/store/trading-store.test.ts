@@ -225,6 +225,25 @@ describe('trading store alert log', () => {
         ]);
     });
 
+    it('does not re-announce a new signal after a page reload', async () => {
+        const start = Date.now() - (12 * HOUR);
+        useTradingStore.getState().updateCandles('RELOADCOIN', '1h', validLongSetup(start));
+        useTradingStore.getState().scanMarket('RELOADCOIN', '1h');
+        const announcedSignalKeys = useTradingStore.getState().announcedSignalKeys;
+        expect(announcedSignalKeys).toHaveLength(1);
+
+        // A reload starts a fresh module (empty in-memory dedupe) with persisted keys.
+        vi.resetModules();
+        const { useTradingStore: reloadedStore } = await import('./trading-store');
+        reloadedStore.getState().reset();
+        reloadedStore.setState({ announcedSignalKeys });
+        reloadedStore.getState().updateCandles('RELOADCOIN', '1h', validLongSetup(start));
+        reloadedStore.getState().scanMarket('RELOADCOIN', '1h');
+
+        expect(reloadedStore.getState().signals).toHaveLength(1);
+        expect(reloadedStore.getState().alertLog).toEqual([]);
+    });
+
     it('captures an entry alert produced by the live lifecycle path', () => {
         const pending = signal('lifecycle-log', Date.now() - 60_000);
         useTradingStore.getState().addSignal(pending);

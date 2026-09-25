@@ -97,6 +97,8 @@ interface TradingState {
     hasSeenGuide: boolean;
     showAllMarkets: boolean;
     sidebarTab: SidebarTab;
+    /** New-signal alert keys already announced, persisted so a reload does not re-announce them. */
+    announcedSignalKeys: string[];
 
     // Chart visualization state
     plottedSignal: ChainSignal | null;
@@ -423,6 +425,7 @@ export const useTradingStore = create<TradingState>()(
             hasSeenGuide: false,
             showAllMarkets: true,
             sidebarTab: 'signals',
+            announcedSignalKeys: [],
             plottedSignal: null,
             selectedSignalId: null,
             showZones: true,
@@ -665,6 +668,8 @@ export const useTradingStore = create<TradingState>()(
                         : null;
                     const shouldClearPlot = plottedSignal &&
                         ['MISSED', 'INVALIDATED', 'CANCELLED'].includes(plottedSignal.status);
+                    const announcedKeys = new Set(state.announcedSignalKeys);
+                    const newlyAnnouncedKeys: string[] = [];
                     const newSignalAlerts = result.newSignals.flatMap((candidate) => {
                         const planKey = getTradePlanKey(candidate);
                         const finalSignal = mergedSignals.find(
@@ -672,8 +677,9 @@ export const useTradingStore = create<TradingState>()(
                         );
                         if (!finalSignal || finalSignal.status !== 'PENDING') return [];
                         const alertKey = `${planKey}:${finalSignal.createdAt}`;
-                        if (alertedNewSignalKeys.has(alertKey)) return [];
+                        if (alertedNewSignalKeys.has(alertKey) || announcedKeys.has(alertKey)) return [];
                         alertedNewSignalKeys.add(alertKey);
+                        newlyAnnouncedKeys.push(alertKey);
                         return [buildTradeAlertEvent('NEW_SIGNAL', finalSignal, state.prices[coin] ?? 0)];
                     });
                     const invalidationAlerts = result.invalidatedSignals.flatMap((candidate) => {
@@ -711,6 +717,12 @@ export const useTradingStore = create<TradingState>()(
                         lastScanTime: state.selectedCoin === coin && state.selectedTimeframe === timeframe
                             ? Date.now()
                             : state.lastScanTime,
+                        ...(newlyAnnouncedKeys.length > 0 && {
+                            announcedSignalKeys: [
+                                ...state.announcedSignalKeys,
+                                ...newlyAnnouncedKeys,
+                            ].slice(-300),
+                        }),
                     });
                     get().publishAlerts([...newSignalAlerts, ...invalidationAlerts]);
                 } catch (error) {
@@ -949,6 +961,7 @@ export const useTradingStore = create<TradingState>()(
                     acknowledgedEntrySignalIds: [],
                     hasSeenGuide: false,
                     showAllMarkets: true,
+                    announcedSignalKeys: [],
                 });
             },
         }),
@@ -966,6 +979,7 @@ export const useTradingStore = create<TradingState>()(
                 alertsLastSeenAt: state.alertsLastSeenAt,
                 acknowledgedEntrySignalIds: state.acknowledgedEntrySignalIds.slice(-100),
                 hasSeenGuide: state.hasSeenGuide,
+                announcedSignalKeys: state.announcedSignalKeys.slice(-300),
                 outcomeHistory: state.outcomeHistory.slice(-500),
                 // Persist user decisions, but never stale candles or unaccepted setups.
                 signals: state.signals
