@@ -43,6 +43,30 @@ agent_path.chmod(0o644)
 subprocess.run(['plutil', '-lint', str(agent_path)], check=True)
 subprocess.run(['launchctl', 'enable', f'{domain}/{label}'], check=True)
 subprocess.run(['launchctl', 'bootstrap', domain, str(agent_path)], check=True)
+
+# Scans and alerts run in the dashboard page, so open it once the server answers
+# after login. Several open tabs are safe: only one tab plays alert sounds.
+dashboard_url = 'http://127.0.0.1:3000/dashboard'
+opener_label = 'com.chaintrader.open-dashboard'
+opener_path = Path.home() / 'Library' / 'LaunchAgents' / f'{opener_label}.plist'
+browser = '/Applications/Brave Browser.app'
+open_command = f'open -a "{browser}" {dashboard_url}' if Path(browser).is_dir() else f'open {dashboard_url}'
+opener = {
+    'Label': opener_label,
+    'ProgramArguments': ['/bin/sh', '-c',
+                         f'for i in $(seq 1 90); do curl -fsS -o /dev/null {dashboard_url} && break; sleep 2; done; {open_command}'],
+    'RunAtLoad': True,
+    'StandardOutPath': str(logs / 'open-dashboard.log'),
+    'StandardErrorPath': str(logs / 'open-dashboard.log'),
+}
+with opener_path.open('wb') as target:
+    plistlib.dump(opener, target)
+opener_path.chmod(0o644)
+subprocess.run(['plutil', '-lint', str(opener_path)], check=True)
+# Register for future logins without opening a browser tab right now.
+subprocess.run(['launchctl', 'enable', f'{domain}/{opener_label}'], check=True)
+
 print('Chain Trader will start at login and restart if it exits.')
-print('Dashboard: http://127.0.0.1:3000/dashboard')
+print(f'The dashboard opens in the browser after each login ({opener_path.name}).')
+print(f'Dashboard: {dashboard_url}')
 print(f'Logs: {logs}')

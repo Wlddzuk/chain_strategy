@@ -54,13 +54,15 @@ describe('HowToUseDrawer', () => {
         const markup = renderToStaticMarkup(
             <HowToUseDrawer open onClose={() => undefined} />
         );
+        // The section jump bar is navigation chrome, not guide text.
+        const guideMarkup = markup.replace(/<nav[\s\S]*?<\/nav>/, '');
 
-        expect(markupToVisibleText(markup)).toBe(markdownText);
+        expect(markupToVisibleText(guideMarkup)).toBe(markdownText);
         expect(markup).toContain('role="dialog"');
         expect(markup).toContain('aria-modal="true"');
         expect(markup.match(/<table/g)).toHaveLength(1);
         expect(markup.match(/<th(?:\s|>)/g)).toHaveLength(9);
-        expect(markup.match(/<ul/g)).toHaveLength(3);
+        expect(markup.match(/<ul/g)).toHaveLength(4);
         expect(markup.match(/<ol/g)).toHaveLength(2);
     });
 });

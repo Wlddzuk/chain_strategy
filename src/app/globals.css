@@ -30,6 +30,19 @@
   --success: #00d26a;
   --warning: #f59e0b;
   --error: #ff4757;
+
+  /* Materials: hairlines catch light, surfaces float over content. */
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+  --material-chrome: rgba(10, 10, 12, 0.72);
+  --material-popover: rgba(24, 24, 27, 0.82);
+  --material-sheet: rgba(18, 18, 20, 0.9);
+
+  /* Motion: iOS sheet curve (critically damped feel), quick press response. */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-press: 100ms;
+  --duration-sheet: 420ms;
 }
 
 @theme inline {
@@ -78,9 +91,9 @@ body {
 .card {
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 16px;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .card:hover {
@@ -148,9 +161,25 @@ body {
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease,
+    transform var(--duration-press) ease-out;
   border: none;
   outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Feedback lives on the press, and it's instant. */
+.btn:active:not(:disabled),
+.toggle-btn:active,
+.press:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.press {
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .btn:disabled {
@@ -270,7 +299,7 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, transform var(--duration-press) ease-out;
   background: transparent;
   color: var(--text-muted);
   border: none;
@@ -436,4 +465,285 @@ body {
 .chart-plot-area[data-drag-cursor],
 .chart-plot-area[data-drag-cursor] * {
   cursor: var(--drag-cursor) !important;
+}
+
+/* ---------- Materials ---------- */
+.material-chrome {
+  background: var(--material-chrome);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+.material-popover {
+  background: var(--material-popover);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+.material-sheet {
+  background: var(--material-sheet);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  backdrop-filter: blur(32px) saturate(180%);
+  border-left: 1px solid var(--hairline-strong);
+  box-shadow: -30px 0 80px rgba(0, 0, 0, 0.55);
+}
+
+/* Popovers grow out of their trigger (top-right), never from their own centre. */
+.popover {
+  background: var(--material-popover);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 18px 50px rgba(0, 0, 0, 0.55);
+  transform-origin: top right;
+  animation: popover-in 220ms var(--ease-out);
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+}
+
+.toast-enter {
+  animation: toast-in 320ms var(--ease-spring);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+/* ---------- Sheet (help guide): enters and leaves along the same path ---------- */
+.sheet-scrim {
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+
+.sheet-panel {
+  transform: translateX(100%);
+  transition: transform var(--duration-sheet) var(--ease-spring);
+  will-change: transform;
+}
+
+[data-state='open'] > .sheet-scrim {
+  opacity: 1;
+}
+
+[data-state='open'] > .sheet-panel {
+  transform: translateX(0);
+}
+
+[data-state='closed'] > .sheet-panel {
+  transition-duration: 300ms;
+}
+
+/* ---------- Controls ---------- */
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  transition: background-color 150ms ease, color 150ms ease, transform var(--duration-press) ease-out;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--foreground);
+}
+
+.icon-btn:active {
+  transform: scale(0.94);
+}
+
+.icon-btn-sm {
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+}
+
+.chip {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 9999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03);
+  transition: background-color 150ms ease, color 150ms ease, transform var(--duration-press) ease-out;
+}
+
+.chip:hover {
+  color: var(--foreground);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chip:active {
+  transform: scale(0.96);
+}
+
+/* iOS-style segmented control with one sliding thumb. */
+.segmented {
+  position: relative;
+  display: grid;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--hairline);
+}
+
+.segmented-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  border-radius: 9px;
+  background: #2a2a2e;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 3px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 380ms var(--ease-spring);
+}
+
+.segmented-item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 6px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 200ms ease, transform var(--duration-press) ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.segmented-item[aria-selected='true'] {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.segmented-item:hover:not([aria-selected='true']) {
+  color: var(--foreground);
+}
+
+.segmented-item:active {
+  transform: scale(0.97);
+}
+
+.segmented-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 480px) {
+  .segmented-item {
+    gap: 4px;
+    padding: 7px 2px;
+    font-size: 12px;
+  }
+}
+
+.segmented-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quiet scrollbars for nested scroll areas. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: #2e2e2e transparent;
+}
+
+.scroll-quiet::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- Accessibility preferences ---------- */
+@media (prefers-reduced-motion: reduce) {
+  /* A gentle cross-fade replaces the slide; nothing moves across the screen. */
+  .sheet-panel,
+  [data-state='open'] > .sheet-panel {
+    transform: none;
+    opacity: 0;
+    transition: opacity 200ms ease !important;
+  }
+
+  [data-state='open'] > .sheet-panel {
+    opacity: 1;
+  }
+
+  .popover,
+  .toast-enter {
+    animation: none;
+  }
+
+  .btn:active:not(:disabled),
+  .toggle-btn:active,
+  .press:active:not(:disabled),
+  .icon-btn:active,
+  .chip:active,
+  .segmented-item:active {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .material-chrome,
+  .material-popover,
+  .material-sheet,
+  .popover {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .material-chrome {
+    background: #0c0c0e;
+  }
+
+  .material-popover,
+  .popover {
+    background: #1b1b1e;
+  }
+
+  .material-sheet {
+    background: #141416;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --hairline: rgba(255, 255, 255, 0.28);
+    --hairline-strong: rgba(255, 255, 255, 0.4);
+    --card-border: #4a4a4a;
+    --text-muted: #b4b4b4;
+  }
 }

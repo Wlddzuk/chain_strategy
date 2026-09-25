@@ -32,3 +32,12 @@ it('retries a failed background scan within the same candle boundary without ham
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(getCandleSnapshot).toHaveBeenCalledTimes(2);
 });
+
+it('keeps scanning for new setups while the tab is hidden', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    vi.mocked(getCandleSnapshot).mockResolvedValue([]);
+    render(createElement(MarketRuntime, { enabled: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(getCandleSnapshot).toHaveBeenCalled();
+});

@@ -11,12 +11,9 @@ Chain Trader watches 8 crypto markets on Hyperliquid and looks for one specific 
 ## The screen, top to bottom
 
 - **Now bar** (under the header): the single most important thing right now. If it says ENTRY HIT, act. If it says "Closest setup...", relax and watch.
-- **Stats row**: current price, number of active plans, your risk settings, connection health, scanner status.
+- **Stats row**: current price, number of active plans with the strategy record underneath (tap it to open the Record tab), your risk settings, connection health, scanner status.
 - **Chart**: candles plus the zones the strategy found. Toggle RSI, Bollinger Bands, EMAs with the toolbar buttons.
-- **Trade Signals**: the active plans. Each card leads with a colored status strip — that strip is the only thing you need to read at a glance.
-- **Setups forming**: early warnings. Price is near a zone, but nothing is confirmed yet. Watch, don't act.
-- **Strategy record**: the tool's own scoreboard of how its plans would have performed. Check it weekly.
-- **Recent Activity**: history of finished plans.
+- **Right-hand tabs**: switch between four views instead of scrolling. **Signals** are the active plans — each card leads with a colored status strip, the only thing you need to read at a glance. **Forming** is early warnings: price is near a zone, nothing confirmed yet, watch don't act. **Record** is the tool's own scoreboard of how its plans would have performed — check it weekly. **History** is finished plans.
 
 ## What the status strips mean
 
@@ -60,3 +57,17 @@ Open Settings → Alerts and press each **Test** button once so your ear learns 
 - Outcomes ("would have won/lost") are based on price touches, not your real fills. Slippage, funding, and partial fills are not simulated.
 - A signal is a pattern match, not a prophecy. The Strategy record tells you over time whether the pattern earns.
 - If the scoreboard shows fewer than ~10 resolved plans, it is too early to judge anything.
+
+## Plain-language glossary
+
+- **Zone** — A price area where buyers or sellers acted strongly.
+- **Zone name vs direction** — A zone's name (supply/demand) is not the trade direction. The BREAK of a zone decides the direction.
+- **Event** — A broken zone that confirms the market moved with strength.
+- **Origin** — The entry zone where the planned limit order waits.
+- **Entry** — Also called the limit order: the price where the plan becomes a trade if price comes back.
+- **Stop** — Also called stop loss: the price that closes the plan to limit a loss.
+- **Target** — Also called take profit: the price that closes the plan in profit.
+- **R:R** — Risk to reward: how much the plan may gain for each 1R risked.
+- **Missed** — Price reached the target before it came back to entry, so the plan is too late.
+- **Invalidated** — The setup failed before entry and must no longer be used.
+- **Would have won/lost** — A price-only result for a plan the app did not place on an exchange.

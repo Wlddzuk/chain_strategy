@@ -31,6 +31,28 @@ export default function TradingAlertRuntime() {
         let audioUnlocked = false;
         const speechQueue = createBrowserSpeechQueue();
 
+        // With the dashboard open in several tabs (e.g. restored after a restart),
+        // only the tab holding this lock speaks, beeps and notifies.
+        let isAlertLeader = typeof navigator === 'undefined' || !navigator.locks;
+        let releaseAlertLock: (() => void) | null = null;
+        let disposed = false;
+        const alertLockController = new AbortController();
+        if (!isAlertLeader) {
+            void navigator.locks.request(
+                'chain-trader-alert-audio',
+                { signal: alertLockController.signal },
+                () => {
+                    if (disposed) return Promise.resolve();
+                    isAlertLeader = true;
+                    return new Promise<void>((resolve) => { releaseAlertLock = resolve; });
+                }
+            ).catch((error: unknown) => {
+                if (!disposed && !(error instanceof DOMException && error.name === 'AbortError')) {
+                    isAlertLeader = true;
+                }
+            });
+        }
+
         const clearUnseen = () => {
             unseenAlerts.clear();
             document.title = baseTitle;
@@ -131,6 +153,7 @@ export default function TradingAlertRuntime() {
                 unseenAlerts.add(`${event.kind}:${event.signalId ?? `${event.coin}:${event.timeframe}`}`);
                 document.title = `(${unseenAlerts.size}) ${baseTitle}`;
             }
+            if (!isAlertLeader) return;
             if (settings.soundEnabled && isAlertEarconEnabled(event, settings)) {
                 playEarcon(event, settings.soundVolume);
             }
@@ -188,6 +211,9 @@ export default function TradingAlertRuntime() {
             window.removeEventListener(TRADE_ALERT_AUDIO_TEST_EVENT, handleAudioTest);
             window.removeEventListener('focus', clearUnseen);
             document.removeEventListener('visibilitychange', handleVisibility);
+            disposed = true;
+            alertLockController.abort();
+            releaseAlertLock?.();
             speechQueue?.dispose();
             clearUnseen();
             if (audioContext) void audioContext.close();

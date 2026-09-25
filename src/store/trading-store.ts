@@ -59,6 +59,8 @@ export interface CoinData {
     isLive: boolean;
 }
 
+export type SidebarTab = 'signals' | 'forming' | 'record' | 'history';
+
 interface TradingState {
     // Selected coin and timeframe
     selectedCoin: string;
@@ -94,6 +96,7 @@ interface TradingState {
     acknowledgedEntrySignalIds: string[];
     hasSeenGuide: boolean;
     showAllMarkets: boolean;
+    sidebarTab: SidebarTab;
 
     // Chart visualization state
     plottedSignal: ChainSignal | null;
@@ -119,6 +122,7 @@ interface TradingState {
     acknowledgeEntrySignal: (signalId: string) => void;
     markGuideSeen: () => void;
     setShowAllMarkets: (showAllMarkets: boolean) => void;
+    setSidebarTab: (tab: SidebarTab) => void;
 
     addSignal: (signal: ChainSignal) => void;
     updateSignalStatus: (signalId: string, status: ChainSignal['status']) => void;
@@ -418,6 +422,7 @@ export const useTradingStore = create<TradingState>()(
             acknowledgedEntrySignalIds: [],
             hasSeenGuide: false,
             showAllMarkets: true,
+            sidebarTab: 'signals',
             plottedSignal: null,
             selectedSignalId: null,
             showZones: true,
@@ -756,6 +761,8 @@ export const useTradingStore = create<TradingState>()(
                 set((state) => state.hasSeenGuide ? state : { hasSeenGuide: true });
             },
 
+            setSidebarTab: (sidebarTab) => set({ sidebarTab }),
+
             setShowAllMarkets: (showAllMarkets) => {
                 set({ showAllMarkets });
             },
@@ -917,6 +924,7 @@ export const useTradingStore = create<TradingState>()(
                     selectedTimeframe: signal.timeframe,
                     selectedSignalId: signal.id,
                     plottedSignal: signal,
+                    sidebarTab: 'signals',
                 });
             },
 

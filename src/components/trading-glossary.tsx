@@ -55,7 +55,7 @@ export default function TradingGlossary({ className = '' }: TradingGlossaryProps
                 aria-expanded={isOpen}
                 aria-controls={panelId}
                 onClick={() => setIsOpen((open) => !open)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--card-border)] text-sm font-bold text-[var(--text-muted)] transition-colors hover:bg-[var(--card-hover)] hover:text-white"
+                className="press inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--card-border)] text-sm font-bold text-[var(--text-muted)] transition-colors hover:bg-[var(--card-hover)] hover:text-white aria-expanded:border-[var(--accent)]/60 aria-expanded:text-[var(--accent)]"
                 title="Plain-language trading glossary"
             >
                 ?
@@ -66,20 +66,20 @@ export default function TradingGlossary({ className = '' }: TradingGlossaryProps
                     id={panelId}
                     role="dialog"
                     aria-label="Trading glossary"
-                    className="absolute right-0 top-full z-[95] mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] p-4 text-left shadow-2xl"
+                    className="popover absolute right-0 top-full z-[95] mt-2 flex max-h-[min(26rem,calc(100dvh-12rem))] w-[min(22rem,calc(100vw-2rem))] flex-col text-left"
                 >
-                    <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center justify-between gap-3 border-b border-[var(--hairline)] px-4 py-3">
                         <h3 className="text-sm font-bold">Plain-language glossary</h3>
                         <button
                             type="button"
                             onClick={() => setIsOpen(false)}
-                            className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--card-hover)] hover:text-white"
+                            className="icon-btn icon-btn-sm"
                             aria-label="Close trading glossary"
                         >
                             ×
                         </button>
                     </div>
-                    <dl className="space-y-2.5 text-xs leading-relaxed">
+                    <dl className="space-y-2.5 overflow-y-auto overscroll-contain px-4 py-3 text-xs leading-relaxed">
                         {GLOSSARY_ITEMS.map(([term, definition]) => (
                             <div key={term}>
                                 <dt className="font-semibold text-white">{term}</dt>

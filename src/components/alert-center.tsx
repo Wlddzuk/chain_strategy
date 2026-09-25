@@ -10,7 +10,6 @@ import { getUnreadAlertCount } from '@/lib/alerts/unread-alerts';
 import { formatPrice } from '@/lib/ui/format-price';
 import { formatRelativeAge } from '@/lib/ui/signal-display';
 import { useTradingStore } from '@/store/trading-store';
-import TradingGlossary from '@/components/trading-glossary';
 
 const KIND_BADGE_CLASS: Record<TradeAlertKind, string> = {
     NEW_SIGNAL: 'border-[var(--accent)]/50 bg-[var(--accent-dim)] text-[var(--accent)]',
@@ -75,7 +74,6 @@ export default function AlertCenter() {
 
     return (
         <div ref={rootRef} className="relative flex items-center gap-2">
-            <TradingGlossary />
             <button
                 type="button"
                 aria-label={unreadCount > 0 ? `Alerts, ${unreadCount} unread` : 'Alerts'}
@@ -99,9 +97,9 @@ export default function AlertCenter() {
                 <section
                     id="trade-alert-center"
                     aria-label="Alerts log"
-                    className="fixed inset-x-4 top-36 z-[80] mt-2 w-auto overflow-hidden rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] shadow-2xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:w-96"
+                    className="popover fixed inset-x-4 top-36 z-[80] mt-2 w-auto overflow-hidden sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:w-96"
                 >
-                    <div className="flex items-center justify-between border-b border-[var(--card-border)] px-4 py-3">
+                    <div className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-3">
                         <div>
                             <h2 className="text-sm font-semibold">Alerts log</h2>
                             <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">Newest activity across all markets</p>
@@ -109,7 +107,7 @@ export default function AlertCenter() {
                         <span className="text-xs text-[var(--text-muted)]">{alertLog.length}/100</span>
                     </div>
 
-                    <div className="max-h-[min(32rem,70vh)] overflow-y-auto">
+                    <div className="max-h-[min(32rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain">
                         {newestFirst.length === 0 ? (
                             <p className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
                                 Alerts will appear here when setups change.

@@ -71,7 +71,8 @@ export default function AlertToastHost() {
     if (toasts.length === 0) return null;
 
     return (
-        <div className="pointer-events-none fixed right-4 top-4 z-[70] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2" aria-live="polite">
+        // Bottom-right, like system notifications, so toasts never cover the header controls.
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2" aria-live="polite">
             {toasts.map((toast) => {
                 const canFocus = Boolean(toast.event.signalId && signalIds.has(toast.event.signalId));
                 const content = (
@@ -87,10 +88,10 @@ export default function AlertToastHost() {
                         </span>
                     </>
                 );
-                const className = `pointer-events-auto w-full rounded-xl border bg-[var(--card-bg)] px-4 py-3 text-left shadow-2xl ${
+                const className = `toast-enter press material-popover pointer-events-auto w-full rounded-2xl border px-4 py-3 text-left ${
                     toast.event.urgent
                         ? 'border-[var(--short-red)]/60'
-                        : 'border-[var(--card-border)]'
+                        : 'border-[var(--hairline-strong)]'
                 }`;
 
                 return (
