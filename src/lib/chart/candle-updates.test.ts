@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '@/lib/trading/types';
-import { canUpdateLastCandle } from './candle-updates';
+import { canUpdateLastCandle, shouldFitAfterRebuild } from './candle-updates';
 
 const bars: Candle[] = [1, 2, 3].map((time) => ({ time, open: 100, high: 105, low: 95, close: 101, volume: 10 }));
 describe('chart candle refreshes', () => {
@@ -14,5 +14,20 @@ describe('chart candle refreshes', () => {
     it('rebuilds for a rolling window or a batch of new bars', () => {
         expect(canUpdateLastCandle(bars, [...bars.slice(1), { ...bars[2], time: 4 }])).toBe(false);
         expect(canUpdateLastCandle(bars, [...bars, { ...bars[2], time: 4 }, { ...bars[2], time: 5 }])).toBe(false);
+    });
+});
+
+describe('chart fit after rebuild', () => {
+    const history: Candle[] = [1, 2, 3, 4, 5].map((time) => ({ ...bars[0], time }));
+    it('fits the first data a fresh chart receives', () => {
+        expect(shouldFitAfterRebuild([], history)).toBe(true);
+        expect(shouldFitAfterRebuild([], [])).toBe(false);
+    });
+    it('refits when REST history replaces a few live-only bars', () => {
+        expect(shouldFitAfterRebuild(history.slice(-2), history)).toBe(true);
+    });
+    it('keeps the zoom for rolling windows and corrected bars', () => {
+        expect(shouldFitAfterRebuild(history, [...history.slice(2), { ...bars[0], time: 6 }, { ...bars[0], time: 7 }])).toBe(false);
+        expect(shouldFitAfterRebuild(history, history.map((bar, i) => i === 0 ? { ...bar, close: 99 } : bar))).toBe(false);
     });
 });
