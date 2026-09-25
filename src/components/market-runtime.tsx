@@ -72,7 +72,7 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
         ): Promise<Candle[]> => {
             const waitMs = Math.max(0, 300 - (Date.now() - lastRequestStartedAt));
             if (waitMs > 0) await delay(waitMs);
-            if (cancelled || document.visibilityState === 'hidden') throw new DOMException('Paused', 'AbortError');
+            if (cancelled) throw new DOMException('Stopped', 'AbortError');
 
             activeController = new AbortController();
             lastRequestStartedAt = Date.now();
@@ -85,8 +85,11 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
             );
         };
 
+        // Sweeps keep running while the tab is hidden: finding signals in the
+        // background is what the desktop notifications and sounds exist for.
+        // Hidden tabs throttle timers, so a sweep may start up to a minute late.
         const runDueSweep = async () => {
-            if (cancelled || document.visibilityState === 'hidden') return;
+            if (cancelled) return;
             if (sweepRunning) {
                 sweepQueued = true;
                 return;
@@ -106,7 +109,7 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
 
             try {
                 for (const { coin, timeframe } of jobs) {
-                    if (cancelled || document.hidden) break;
+                    if (cancelled) break;
                     const key = `${coin}:${timeframe}`;
                     const boundary = getEligibleScanBoundary(now, timeframe);
                     if (attemptedBoundaries.get(key) === boundary) continue;
@@ -139,7 +142,7 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
                         retryAfter.delete(key);
                     } catch (error) {
                         if (error instanceof DOMException && error.name === 'AbortError') {
-                            // A hidden-tab pause did not complete this boundary; retry it on refocus.
+                            // An interrupted request did not complete this boundary; retry it.
                             attemptedBoundaries.delete(key);
                         } else {
                             retryAfter.set(key, Date.now() + 30_000);
@@ -159,11 +162,7 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
         };
 
         const handleVisibility = () => {
-            if (document.visibilityState === 'hidden') {
-                activeController?.abort();
-                return;
-            }
-            void runDueSweep();
+            if (document.visibilityState === 'visible') void runDueSweep();
         };
 
         const interval = setInterval(() => void runDueSweep(), 1000);

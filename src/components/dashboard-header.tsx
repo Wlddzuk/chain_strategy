@@ -16,7 +16,8 @@ export function DashboardHeader({
     onSettingsToggle,
 }: DashboardHeaderProps) {
     return (
-        <header className="border-b border-[var(--card-border)] bg-[rgba(10,10,10,0.94)] backdrop-blur-xl">
+        // z-50 keeps the header's popovers (alerts, glossary) above the sticky Now bar and the cards.
+        <header className="material-chrome relative z-50 border-b border-[var(--hairline)]">
             <div className="mx-auto max-w-[1800px] px-4 py-3 sm:px-6 sm:py-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex min-w-0 items-center gap-3">

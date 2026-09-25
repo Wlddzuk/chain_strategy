@@ -149,22 +149,24 @@ export function NowBar() {
 
     return (
         <div
-            className={`sticky top-0 z-40 border-b ${className}`}
+            className="material-chrome sticky top-0 z-40"
             role={active ? 'status' : undefined}
             aria-live={active ? 'polite' : undefined}
         >
-            <div className="mx-auto max-w-[1800px] px-4 sm:px-6">
-                {active ? (
-                    <button
-                        type="button"
-                        onClick={handleOpen}
-                        className="w-full py-2 text-left text-sm font-bold tracking-wide sm:text-center"
-                    >
-                        {content}
-                    </button>
-                ) : (
-                    <p className="py-2 text-sm font-semibold sm:text-center">{content}</p>
-                )}
+            <div className={`border-b transition-colors duration-300 ${className}`}>
+                <div className="mx-auto max-w-[1800px] px-4 sm:px-6">
+                    {active ? (
+                        <button
+                            type="button"
+                            onClick={handleOpen}
+                            className="w-full py-2 text-left text-sm font-bold tracking-wide sm:text-center"
+                        >
+                            {content}
+                        </button>
+                    ) : (
+                        <p className="py-2 text-sm font-semibold sm:text-center">{content}</p>
+                    )}
+                </div>
             </div>
         </div>
     );
