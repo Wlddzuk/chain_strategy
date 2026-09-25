@@ -3,6 +3,7 @@
 
 import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { dedupeNewSignalAlerts } from '../lib/alerts/alert-log';
 import {
     buildTradeAlertEvent,
     emitTradeAlert,
@@ -1007,6 +1008,7 @@ export const useTradingStore = create<TradingState>()(
                     ...persisted,
                     signals,
                     outcomeHistory,
+                    alertLog: dedupeNewSignalAlerts(persisted.alertLog ?? currentState.alertLog),
                     settings: {
                         ...currentState.settings,
                         ...persisted.settings,
