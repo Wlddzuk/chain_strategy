@@ -5,7 +5,9 @@ import {
     Candle,
     Zone,
     EngulfingPattern,
+    Timeframe,
     getCandleDirection,
+    getTimeframeMs,
 } from './types';
 
 function buildZoneId(type: Zone['type'], candle: Candle): string {
@@ -224,4 +226,155 @@ export function findSupersededZoneIds(zones: Zone[]): Set<string> {
         for (const zone of live) if (zone.id !== newest.id) superseded.add(zone.id);
     }
     return superseded;
+}
+
+// ---------------------------------------------------------------------------
+// Zone freshness (Muro Crypto, Supply & Demand Part I)
+//
+// The traders who built a zone defend it on the first return, maybe a second.
+// After that it is spent. Zones also age out: 5m-15m zones are good for 3-4
+// days, 1h-4h zones for up to a month.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const ZONE_MAX_AGE_MS: Record<Timeframe, number> = {
+    '5m': 4 * DAY_MS,
+    '15m': 4 * DAY_MS,
+    '1h': 30 * DAY_MS,
+    '4h': 30 * DAY_MS,
+};
+
+/** Returns at or beyond this count mean the zone has been used up. */
+const SPENT_AFTER_RETURNS = 2;
+
+/** A first return within this many candles of price leaving is "straight back". */
+const QUICK_RETURN_CANDLES = 2;
+
+export interface ZoneFreshness {
+    returns: number;
+    /** Price is inside the zone right now on its first return. */
+    firstReturnNow: boolean;
+    /** The first return came straight back — weaker, a caution not a filter. */
+    quickReturn: boolean;
+    spent: boolean;
+    tooOld: boolean;
+}
+
+function touchesZone(zone: Zone, candle: Candle): boolean {
+    return zone.type === 'DEMAND'
+        ? candle.low <= zone.proximalLine
+        : candle.high >= zone.proximalLine;
+}
+
+export function isZoneTooOld(zone: Zone, timeframe: Timeframe, now: number): boolean {
+    return now - zone.createdAt > ZONE_MAX_AGE_MS[timeframe];
+}
+
+/**
+ * Count returns as visits: price has to leave the zone before coming back
+ * counts. Price is still at the zone while it forms (the engulfing candle
+ * overlaps the swallowed one), so that never counts as a return.
+ */
+export function getZoneFreshness(
+    zone: Zone,
+    candles: Candle[],
+    timeframe: Timeframe,
+    now: number
+): ZoneFreshness {
+    let returns = 0;
+    let inZone = true;
+    let candlesAway = 0;
+    let quickReturn = false;
+
+    for (const candle of candles) {
+        if (candle.time <= zone.createdAt) continue;
+        if (checkZoneBroken(zone, candle)) break;
+
+        const touching = touchesZone(zone, candle);
+        if (touching && !inZone) {
+            returns++;
+            if (returns === 1 && candlesAway <= QUICK_RETURN_CANDLES) quickReturn = true;
+        }
+        candlesAway = touching ? 0 : candlesAway + 1;
+        inZone = touching;
+    }
+
+    return {
+        returns,
+        firstReturnNow: returns === 1 && inZone,
+        quickReturn,
+        spent: returns >= SPENT_AFTER_RETURNS,
+        tooOld: isZoneTooOld(zone, timeframe, now),
+    };
+}
+
+/** A live zone still worth trading from: not spent, not past its age. */
+export function isZoneTradeable(zone: Zone, timeframe: Timeframe, now: number): boolean {
+    return zone.status === 'ACTIVE' &&
+        (zone.returns ?? 0) < SPENT_AFTER_RETURNS &&
+        !isZoneTooOld(zone, timeframe, now);
+}
+
+/** Same-side zones formed within this many candles of each other can stack. */
+const STACK_CANDLES = 6;
+
+/** Stacked boxes may sit this far apart (fraction of price) and still merge. */
+const STACK_GAP_FRACTION = 0.005;
+
+/**
+ * Several supply (or demand) zones built one after another, overlapping or
+ * edge to edge, are drawn as one zone covering all of them. Display only.
+ * The merged box starts at its oldest member and ranks by its newest.
+ */
+export function mergeStackedZones(zones: Zone[], timeframe: Timeframe): Zone[] {
+    const stackWindow = STACK_CANDLES * getTimeframeMs(timeframe);
+    const bounds = (zone: Zone) => [
+        Math.min(zone.proximalLine, zone.distalLine),
+        Math.max(zone.proximalLine, zone.distalLine),
+    ];
+    const merged: Zone[] = [];
+
+    for (const type of ['DEMAND', 'SUPPLY'] as const) {
+        const sameSide = zones
+            .filter((zone) => zone.type === type && zone.status !== 'EVENT' && zone.status !== 'BROKEN')
+            .sort((first, second) => first.createdAt - second.createdAt);
+        let group: Zone[] = [];
+
+        const flush = () => {
+            if (group.length === 1) merged.push(group[0]);
+            if (group.length > 1) {
+                const newest = group[group.length - 1];
+                const lows = group.map((zone) => bounds(zone)[0]);
+                const highs = group.map((zone) => bounds(zone)[1]);
+                merged.push({
+                    ...newest,
+                    id: `stack-${group.map((zone) => zone.id).join('+')}`,
+                    proximalLine: type === 'DEMAND' ? Math.max(...highs) : Math.min(...lows),
+                    distalLine: type === 'DEMAND' ? Math.min(...lows) : Math.max(...highs),
+                    createdAt: group[0].createdAt,
+                    strength: Math.max(...group.map((zone) => zone.strength)),
+                    returns: Math.max(...group.map((zone) => zone.returns ?? 0)),
+                    stackedCount: group.length,
+                });
+            }
+            group = [];
+        };
+
+        for (const zone of sameSide) {
+            const previous = group[group.length - 1];
+            if (previous) {
+                const [low, high] = bounds(zone);
+                const [previousLow, previousHigh] = bounds(previous);
+                const gap = Math.max(low, previousLow) - Math.min(high, previousHigh);
+                const close = zone.createdAt - previous.createdAt <= stackWindow &&
+                    gap <= STACK_GAP_FRACTION * zone.proximalLine;
+                if (!close) flush();
+            }
+            group.push(zone);
+        }
+        flush();
+    }
+
+    return [...merged, ...zones.filter((zone) => zone.status === 'EVENT' || zone.status === 'BROKEN')];
 }

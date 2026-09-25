@@ -1,5 +1,6 @@
 import type { ChainStrategyState } from '@/lib/trading/chain-strategy';
 import { getTimeframeMs, type Timeframe, type Zone } from '@/lib/trading/types';
+import { isZoneTradeable } from '@/lib/trading/zone-marker';
 
 const SCANNED_TIMEFRAMES: readonly Timeframe[] = ['5m', '15m', '1h', '4h'];
 
@@ -73,11 +74,26 @@ export function getZoneProximity(
     return { distancePercent: 0, priceRelation: 'inside' };
 }
 
+export interface FormingSetupOptions {
+    maxDistancePercent?: number;
+    maxRows?: number;
+    now?: number;
+    /**
+     * Include zones that are spent or past their age. Break alerts want these:
+     * price going through any live zone is a Chain trigger, fresh or not.
+     */
+    includeStaleZones?: boolean;
+}
+
 export function deriveFormingSetups(
     strategyStates: FormingStrategyStates,
     prices: Readonly<Record<string, number>>,
-    maxDistancePercent = 5,
-    maxRows = 8
+    {
+        maxDistancePercent = 5,
+        maxRows = 8,
+        now = Date.now(),
+        includeStaleZones = false,
+    }: FormingSetupOptions = {}
 ): FormingSetup[] {
     const distanceLimit = Number.isFinite(maxDistancePercent)
         ? Math.max(0, maxDistancePercent)
@@ -95,8 +111,11 @@ export function deriveFormingSetups(
             const state = markets[timeframe];
             if (!state) continue;
 
+            // Only zones still worth trading: first or second return, not aged out.
             const nearestZone = state.zones
-                .filter((zone) => zone.status === 'ACTIVE')
+                .filter((zone) => includeStaleZones
+                    ? zone.status === 'ACTIVE'
+                    : isZoneTradeable(zone, timeframe, now))
                 .map((zone) => ({ zone, ...getZoneProximity(zone, currentPrice) }))
                 .filter(({ distancePercent }) => distancePercent <= distanceLimit)
                 .sort((first, second) =>

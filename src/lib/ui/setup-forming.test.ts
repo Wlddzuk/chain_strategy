@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChainStrategyState } from '@/lib/trading/chain-strategy';
 import type { Candle, Timeframe, Zone } from '@/lib/trading/types';
 import {
@@ -56,6 +56,15 @@ function marketStates(entries: Array<[string, Timeframe, ChainStrategyState]>): 
 
     return result;
 }
+
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+    vi.useRealTimers();
+});
 
 describe('isBreakForming', () => {
     it('requires supply price to trade strictly above the distal line', () => {
@@ -162,5 +171,18 @@ describe('forming setup derivation', () => {
         const breaks = deriveBreakFormingSetups(marketStates(entries), prices);
 
         expect(breaks.map((setup) => setup.zone.id)).toContain('hidden-break');
+    });
+});
+
+describe('forming setups skip zones that are no longer fresh', () => {
+    it('ignores spent zones and zones past their age', () => {
+        const DAY = 24 * 60 * 60 * 1000;
+        const states = marketStates([
+            ['BTC', '1h', state([{ ...zone('spent', 'DEMAND', 99, 98), returns: 2 }])],
+            ['ETH', '15m', state([{ ...zone('old', 'DEMAND', 99, 98), createdAt: NOW - (5 * DAY) }])],
+            ['SOL', '1h', state([{ ...zone('fresh', 'DEMAND', 99, 98), returns: 1 }])],
+        ]);
+        const setups = deriveFormingSetups(states, { BTC: 100, ETH: 100, SOL: 100 });
+        expect(setups.map((setup) => setup.zone.id)).toEqual(['fresh']);
     });
 });

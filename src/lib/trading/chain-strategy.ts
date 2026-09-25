@@ -20,6 +20,9 @@ import {
     markSupplyZone,
     checkZoneBroken,
     findNextOpposingZone,
+    getZoneFreshness,
+    isZoneTooOld,
+    ZONE_MAX_AGE_MS,
 } from './zone-marker';
 import {
     calculateRSI,
@@ -273,9 +276,9 @@ export function scanForSignals(
 
             // Strategy triggers only after the break candle CLOSES beyond distal.
             const signalCreatedAt = candle.time + getTimeframeMs(timeframe);
-            // The source strategy invalidates a setup only when its origin is broken.
-            // Avoid an arbitrary end-of-day expiry, especially on 1h/4h setups.
-            const expiresAt = Number.MAX_SAFE_INTEGER;
+            // The origin zone is only worth trading while it is fresh: 3-4 days
+            // on 5m/15m, up to a month on 1h/4h. After that it is history.
+            const expiresAt = originZone.createdAt + ZONE_MAX_AGE_MS[timeframe];
 
             const signal: ChainSignal = {
                 id: buildSignalId(coin, timeframe, direction, zone, originZone),
@@ -343,6 +346,13 @@ export function scanForSignals(
 
     // Keep zones clean.
     state.zones = dedupeZones(state.zones).filter((zone) => zone.status !== 'BROKEN');
+    // Record how many times price has come back to each live zone; after the
+    // second return a zone is spent.
+    for (const zone of state.zones) {
+        if (zone.status === 'ACTIVE') {
+            zone.returns = getZoneFreshness(zone, candles, timeframe, now).returns;
+        }
+    }
     state.events = dedupeZones(state.events);
 
     return { state, newSignals, invalidatedSignals };
@@ -421,7 +431,8 @@ function buildSignalId(
 }
 
 function isSignalExpired(signal: ChainSignal, now: number): boolean {
-    return now > signal.expiresAt;
+    // Plans saved before the age rule carry no expiry, so check the origin too.
+    return now > signal.expiresAt || isZoneTooOld(signal.originZone, signal.timeframe, now);
 }
 
 function buildRangeContext(

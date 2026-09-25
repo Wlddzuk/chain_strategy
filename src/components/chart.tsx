@@ -77,8 +77,8 @@ import {
 import { detectEngulfingPatterns, isDecisiveEngulfing } from '@/lib/trading/pattern-detector';
 import { calculatePositionSize } from '@/lib/trading/risk-calculator';
 import { calculateRSI, findTripleDivergences } from '@/lib/trading/rsi-divergence';
-import { Candle, ChainSignal, RsiDivergence, Zone, getTimeframeMs } from '@/lib/trading/types';
-import { findSupersededZoneIds } from '@/lib/trading/zone-marker';
+import { Candle, ChainSignal, RsiDivergence, Timeframe, Zone, getTimeframeMs } from '@/lib/trading/types';
+import { findSupersededZoneIds, getZoneFreshness, mergeStackedZones } from '@/lib/trading/zone-marker';
 import { findWickMidpoints, summarizeWickMidpoints, type WickMidpoint } from '@/lib/trading/wick-midpoint';
 import { formatPrice } from '@/lib/ui/format-price';
 import { formatCompactAge } from '@/lib/ui/signal-display';
@@ -113,6 +113,7 @@ interface Drawing {
 interface OverlayInputs {
     zones: Zone[];
     supersededZoneIds: Set<string>;
+    zoneNotes: Map<string, string>;
     showZones: boolean;
     signal: ChainSignal | null;
     drawings: Drawing[];
@@ -189,15 +190,52 @@ function drawingId(): string {
         : `drawing-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-/** Every live supply/demand zone plus the latest EVENT. */
-function getChartZones(zones: Zone[]): Zone[] {
-    const live = zones.filter((zone) => zone.status === 'ACTIVE' || zone.status === 'TESTED');
+interface ChartZones {
+    zones: Zone[];
+    /** Label suffix per zone id: "1st return", "used once", "3 stacked"... */
+    notes: Map<string, string>;
+    /** Live zones left off the chart because they are spent or too old. */
+    hiddenCount: number;
+}
+
+/**
+ * Live supply/demand zones still worth trading plus the latest EVENT. A zone
+ * price has come back to twice is spent, and zones age out (3-4 days on
+ * 5m/15m, a month on 1h/4h); both are left off. Stacked zones merge into one.
+ */
+function getChartZones(zones: Zone[], candles: Candle[], timeframe: Timeframe): ChartZones {
+    const now = candles[candles.length - 1]?.time ?? 0;
+    const notes = new Map<string, string>();
+    let hiddenCount = 0;
+    const live = zones
+        .filter((zone) => zone.status === 'ACTIVE' || zone.status === 'TESTED')
+        .flatMap((zone) => {
+            const freshness = getZoneFreshness(zone, candles, timeframe, now);
+            if (freshness.spent || freshness.tooOld) {
+                hiddenCount++;
+                return [];
+            }
+            const note = [
+                freshness.firstReturnNow ? '1st return' : freshness.returns === 1 ? 'used once' : '',
+                freshness.quickReturn ? 'fast return' : '',
+            ].filter(Boolean).join(' · ');
+            if (note) notes.set(zone.id, note);
+            return [{ ...zone, returns: freshness.returns }];
+        });
+    const merged = mergeStackedZones(live, timeframe);
+    for (const zone of merged) {
+        if (zone.stackedCount) notes.set(zone.id, `${zone.stackedCount} stacked`);
+    }
     const event = zones
         .filter((zone) => zone.status === 'EVENT')
         .sort((first, second) => second.createdAt - first.createdAt)
         .slice(0, 1);
 
-    return Array.from(new Map([...live, ...event].map((zone) => [zone.id, zone])).values());
+    return {
+        zones: Array.from(new Map([...merged, ...event].map((zone) => [zone.id, zone])).values()),
+        notes,
+        hiddenCount,
+    };
 }
 
 function calculateEma(candles: Candle[], period: number) {
@@ -557,10 +595,12 @@ function buildOverlayModel(
                 : superseded
                     ? SUPERSEDED_ZONE_COLORS[zone.type]
                     : ZONE_COLORS[zone.type];
+            const baseLabel = zone.status === 'EVENT' ? 'EVENT' : superseded ? `old ${zone.type.toLowerCase()}` : zone.type;
+            const note = inputs.zoneNotes.get(zone.id);
             addZone(zone, {
                 fill: colors.fill,
                 border: colors.border,
-                label: zone.status === 'EVENT' ? 'EVENT' : superseded ? `old ${zone.type.toLowerCase()}` : zone.type,
+                label: note ? `${baseLabel} · ${note}` : baseLabel,
             });
         }
     }
@@ -944,6 +984,7 @@ export default function Chart({
     const overlayInputsRef = useRef<OverlayInputs>({
         zones: [],
         supersededZoneIds: new Set(),
+        zoneNotes: new Map(),
         showZones: false,
         signal: null,
         drawings: [],
@@ -1000,7 +1041,11 @@ export default function Chart({
         () => latestCandleTime === null ? null : { time: latestCandleTime, index: candles.length - 1, stepMs },
         [candles.length, latestCandleTime, stepMs]
     );
-    const chartZones = useMemo(() => getChartZones(zones), [zones]);
+    const {
+        zones: chartZones,
+        notes: zoneNotes,
+        hiddenCount: hiddenZoneCount,
+    } = useMemo(() => getChartZones(zones, candles, selectedTimeframe), [zones, candles, selectedTimeframe]);
     const supersededZoneIds = useMemo(() => findSupersededZoneIds(chartZones), [chartZones]);
     const autoFib = useMemo(() => getAutoFibAnchors(candles), [candles]);
     // Decisive engulfing structures from closed candles. Per the Chain Strategy
@@ -1744,6 +1789,7 @@ export default function Chart({
         overlayInputsRef.current = {
             zones: chartZones,
             supersededZoneIds,
+            zoneNotes,
             showZones,
             signal: signalToPlot,
             drawings,
@@ -1761,7 +1807,7 @@ export default function Chart({
             positionRisk: { equity: accountEquity, riskPercent },
         };
         scheduleOverlay();
-    }, [accountEquity, candles, riskPercent, timeAnchor, autoFib, draftAnchor, drawings, drawingsVisible, chartZones, supersededZoneIds, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay, tripleDivergences, showDivergences, shownWickLevels, showWickLevels]);
+    }, [accountEquity, candles, riskPercent, timeAnchor, autoFib, draftAnchor, drawings, drawingsVisible, chartZones, supersededZoneIds, zoneNotes, selectedDrawingId, showAutoFib, showZones, signalToPlot, scheduleOverlay, tripleDivergences, showDivergences, shownWickLevels, showWickLevels]);
 
     const setMode = (mode: DrawingMode) => {
         drawingModeRef.current = mode;
@@ -2068,11 +2114,14 @@ export default function Chart({
         const nextVisible = !showZones;
         toggleZones();
         const liveCount = chartZones.filter((zone) => zone.status !== 'EVENT').length;
+        const hiddenNote = hiddenZoneCount > 0
+            ? ` ${hiddenZoneCount} used-up or too-old zone${hiddenZoneCount === 1 ? ' is' : 's are'} left off.`
+            : '';
         setToolMessage(
             nextVisible
                 ? liveCount > 0
-                    ? `${liveCount} live supply/demand zone${liveCount === 1 ? '' : 's'} shown — the newest demand and supply are bright; ${supersededZoneIds.size} older one${supersededZoneIds.size === 1 ? '' : 's'} a newer engulfing replaced ${supersededZoneIds.size === 1 ? 'is' : 'are'} faded.`
-                    : 'Zones are on, but this scan has no live supply or demand zones.'
+                    ? `${liveCount} live supply/demand zone${liveCount === 1 ? '' : 's'} shown — the newest demand and supply are bright; ${supersededZoneIds.size} older one${supersededZoneIds.size === 1 ? '' : 's'} a newer engulfing replaced ${supersededZoneIds.size === 1 ? 'is' : 'are'} faded.${hiddenNote}`
+                    : `Zones are on, but this scan has no live supply or demand zones.${hiddenNote}`
                 : 'Supply and demand zones hidden.'
         );
     };

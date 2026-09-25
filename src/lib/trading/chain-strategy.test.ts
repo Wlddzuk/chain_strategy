@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { passesSetupQualityGate, scanForSignals } from './chain-strategy';
 import { Candle } from './types';
 
@@ -36,6 +36,16 @@ function razorThinLongSetup(): Candle[] {
         ? candle(5, 98, 98.2, 97.9, 97.95)
         : item);
 }
+
+// Zones age out after a month on 1h, so pin the clock to the day of the candles.
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(START + (24 * HOUR));
+});
+
+afterEach(() => {
+    vi.useRealTimers();
+});
 
 describe('Chain Strategy scanner', () => {
     it('generates the mirrored short setup with a stop above entry and target below', () => {
@@ -193,5 +203,29 @@ describe('setup quality gate', () => {
         });
 
         expect(boundary.newSignals).toHaveLength(1);
+    });
+});
+
+describe('zone age', () => {
+    it('expires a pending plan once its origin zone is older than a month on 1h', () => {
+        const first = scanForSignals(validLongSetup(), 'BTC', '1h');
+        const [signal] = first.newSignals;
+        expect(signal.expiresAt).toBe(signal.originZone.createdAt + (30 * 24 * HOUR));
+
+        vi.setSystemTime(signal.expiresAt + 1);
+        const later = scanForSignals(validLongSetup(), 'BTC', '1h', first.state);
+        expect(later.invalidatedSignals.map((item) => item.id)).toEqual([signal.id]);
+    });
+
+    it('expires plans saved before the age rule by their origin zone age', () => {
+        const first = scanForSignals(validLongSetup(), 'BTC', '1h');
+        const legacy = {
+            ...first.state,
+            signals: first.state.signals.map((item) => ({ ...item, expiresAt: Number.MAX_SAFE_INTEGER })),
+        };
+
+        vi.setSystemTime(START + (31 * 24 * HOUR));
+        const later = scanForSignals(validLongSetup(), 'BTC', '1h', legacy);
+        expect(later.invalidatedSignals).toHaveLength(1);
     });
 });

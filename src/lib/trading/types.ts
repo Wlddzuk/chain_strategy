@@ -23,6 +23,8 @@ export interface Zone {
   status: 'ACTIVE' | 'EVENT' | 'TESTED' | 'BROKEN';
   strength: number;      // 0-100, based on pattern type and RSI divergence
   originCandle: Candle;  // The reference candle that created the zone
+  returns?: number;      // Times price left the zone and came back (set by each scan)
+  stackedCount?: number; // Display only: how many stacked zones this box merges
 }
 
 export type FormationType = 'RBR' | 'DBD' | 'DBR' | 'RBD' | null;
