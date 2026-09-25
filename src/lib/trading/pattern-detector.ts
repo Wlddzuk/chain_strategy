@@ -37,9 +37,15 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
         const previousBodyTop = Math.max(previous.open, previous.close);
         const previousBodyBottom = Math.min(previous.open, previous.close);
 
-        // Check for bullish engulfing: green candle engulfs red
+        const currentBody = getCandleBody(current);
+        const previousBody = getCandleBody(previous);
+        const bodyEngulfs = currentBodyTop >= previousBodyTop && currentBodyBottom <= previousBodyBottom;
+        const rangeEngulfs = current.high >= previous.high && current.low <= previous.low;
+        const isBiggerBody = currentBody > previousBody;
+
+        // Check for bullish engulfing: green candle after red and bigger
         if (currentDir === 'BULLISH' && previousDir === 'BEARISH') {
-            if (currentBodyTop > previousBodyTop && currentBodyBottom < previousBodyBottom) {
+            if ((bodyEngulfs || rangeEngulfs) && isBiggerBody) {
                 patterns.push({
                     type: 'BULLISH',
                     index: i,
@@ -49,9 +55,9 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
             }
         }
 
-        // Check for bearish engulfing: red candle engulfs green
+        // Check for bearish engulfing: red candle after green and bigger
         if (currentDir === 'BEARISH' && previousDir === 'BULLISH') {
-            if (currentBodyTop > previousBodyTop && currentBodyBottom < previousBodyBottom) {
+            if ((bodyEngulfs || rangeEngulfs) && isBiggerBody) {
                 patterns.push({
                     type: 'BEARISH',
                     index: i,
@@ -63,6 +69,26 @@ export function detectEngulfingPatterns(candles: Candle[]): EngulfingPattern[] {
     }
 
     return patterns;
+}
+
+/**
+ * Engulfing the way he marks it by eye: the engulfing body is visibly bigger —
+ * at least `minBodyRatio` times the swallowed candle's body and no smaller than
+ * the average body of the previous `averageBars` candles. Filters out the small
+ * engulfings that `detectEngulfingPatterns` also reports.
+ */
+export function isDecisiveEngulfing(
+    candles: Candle[],
+    pattern: EngulfingPattern,
+    minBodyRatio: number = 1.5,
+    averageBars: number = 20
+): boolean {
+    const engulfingBody = getCandleBody(pattern.engulfingCandle);
+    if (engulfingBody < getCandleBody(pattern.engulfedCandle) * minBodyRatio) return false;
+    const previous = candles.slice(Math.max(0, pattern.index - averageBars), pattern.index);
+    if (!previous.length) return true;
+    const averageBody = previous.reduce((sum, candle) => sum + getCandleBody(candle), 0) / previous.length;
+    return engulfingBody >= averageBody;
 }
 
 /**
@@ -142,7 +168,6 @@ export function classifyFormation(
     const preMoveDirection = preBaseCandle.close > preBaseCandle.open ? 'RALLY' : 'DROP';
 
     // Get the move after the base
-    const lastBaseCandle = candles[baseEndIndex];
     const postBaseCandle = candles[baseEndIndex + 1];
     const postMoveDirection = postBaseCandle.close > postBaseCandle.open ? 'RALLY' : 'DROP';
 
@@ -181,7 +206,7 @@ export function identifyBase(candles: Candle[], startIndex: number): { start: nu
     const avgRange = candles.slice(Math.max(0, startIndex - 10), startIndex)
         .reduce((sum, c) => sum + getCandleRange(c), 0) / Math.min(10, startIndex);
 
-    let baseStart = startIndex;
+    const baseStart = startIndex;
     let baseEnd = startIndex;
 
     // Extend base while candles are small (less than 50% of average range)

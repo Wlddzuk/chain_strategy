@@ -3,18 +3,21 @@
 import { useTradingStore } from '@/store/trading-store';
 
 export default function CoinSelector() {
-    const { selectedCoin, setSelectedCoin, availableCoins, prices } = useTradingStore();
+    const selectedCoin = useTradingStore((state) => state.selectedCoin);
+    const setSelectedCoin = useTradingStore((state) => state.setSelectedCoin);
+    const availableCoins = useTradingStore((state) => state.availableCoins);
 
     return (
         <div className="relative">
             <select
+                aria-label="Market"
                 value={selectedCoin}
                 onChange={(e) => setSelectedCoin(e.target.value)}
                 className="select min-w-[140px] appearance-none pr-10"
             >
                 {availableCoins.map((coin) => (
                     <option key={coin} value={coin}>
-                        {coin}/USDT
+                        {coin}/USD
                     </option>
                 ))}
             </select>

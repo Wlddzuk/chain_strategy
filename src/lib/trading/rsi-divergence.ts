@@ -1,7 +1,128 @@
 // RSI Calculation and Divergence Detection Module
-// Implements RSI calculation and bullish/bearish divergence detection for signal confirmation
+// RSI calculation and Walid's three-touch divergence (lower lows, RSI level) for signal confirmation
 
 import { Candle, RsiDivergence } from './types';
+
+export interface RsiAccumulatorState {
+    period: number;
+    previousClose: number | null;
+    changeCount: number;
+    seedGain: number;
+    seedLoss: number;
+    averageGain: number | null;
+    averageLoss: number | null;
+}
+
+export interface RsiAccumulatorStep {
+    state: RsiAccumulatorState;
+    value: number;
+}
+
+function assertValidPeriod(period: number): void {
+    if (!Number.isInteger(period) || period < 1) {
+        throw new RangeError('RSI period must be a positive integer');
+    }
+}
+
+function calculateRsiValue(averageGain: number, averageLoss: number): number {
+    if (averageLoss === 0) return 100;
+    const relativeStrength = averageGain / averageLoss;
+    return 100 - (100 / (1 + relativeStrength));
+}
+
+/**
+ * Create the serializable smoothing state used by Wilder's RSI calculation.
+ * `advanceRsiAccumulator` is pure, so a caller can retain a previous closed-bar
+ * state and safely recompute a changing, still-forming bar from that state.
+ */
+export function createRsiAccumulator(period: number = 14): RsiAccumulatorState {
+    assertValidPeriod(period);
+    return {
+        period,
+        previousClose: null,
+        changeCount: 0,
+        seedGain: 0,
+        seedLoss: 0,
+        averageGain: null,
+        averageLoss: null,
+    };
+}
+
+/** Advance an RSI smoothing state by one close without mutating the input. */
+export function advanceRsiAccumulator(
+    state: RsiAccumulatorState,
+    close: number
+): RsiAccumulatorStep {
+    if (state.previousClose === null) {
+        return {
+            state: { ...state, previousClose: close },
+            value: NaN,
+        };
+    }
+
+    const change = close - state.previousClose;
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+    const changeCount = state.changeCount + 1;
+
+    if (changeCount < state.period) {
+        return {
+            state: {
+                ...state,
+                previousClose: close,
+                changeCount,
+                seedGain: state.seedGain + gain,
+                seedLoss: state.seedLoss + loss,
+            },
+            value: NaN,
+        };
+    }
+
+    if (changeCount === state.period) {
+        const averageGain = (state.seedGain + gain) / state.period;
+        const averageLoss = (state.seedLoss + loss) / state.period;
+        return {
+            state: {
+                ...state,
+                previousClose: close,
+                changeCount,
+                seedGain: 0,
+                seedLoss: 0,
+                averageGain,
+                averageLoss,
+            },
+            value: calculateRsiValue(averageGain, averageLoss),
+        };
+    }
+
+    const previousAverageGain = state.averageGain ?? 0;
+    const previousAverageLoss = state.averageLoss ?? 0;
+    const averageGain = ((previousAverageGain * (state.period - 1)) + gain) / state.period;
+    const averageLoss = ((previousAverageLoss * (state.period - 1)) + loss) / state.period;
+
+    return {
+        state: {
+            ...state,
+            previousClose: close,
+            changeCount,
+            averageGain,
+            averageLoss,
+        },
+        value: calculateRsiValue(averageGain, averageLoss),
+    };
+}
+
+/** Build the smoothing state after consuming every supplied close. */
+export function buildRsiAccumulator(
+    closes: readonly number[],
+    period: number = 14
+): RsiAccumulatorState {
+    let state = createRsiAccumulator(period);
+    for (const close of closes) {
+        state = advanceRsiAccumulator(state, close).state;
+    }
+    return state;
+}
 
 /**
  * Calculate RSI (Relative Strength Index)
@@ -12,190 +133,196 @@ import { Candle, RsiDivergence } from './types';
 export function calculateRSI(closes: number[], period: number = 14): number[] {
     const rsi: number[] = new Array(closes.length).fill(NaN);
 
-    if (closes.length < period + 1) {
-        return rsi;
-    }
-
-    // Calculate price changes
-    const changes: number[] = [];
-    for (let i = 1; i < closes.length; i++) {
-        changes.push(closes[i] - closes[i - 1]);
-    }
-
-    // Separate gains and losses
-    const gains = changes.map(c => (c > 0 ? c : 0));
-    const losses = changes.map(c => (c < 0 ? Math.abs(c) : 0));
-
-    // Calculate initial average gain/loss (simple average for first period)
-    let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
-
-    // Calculate first RSI value
-    if (avgLoss === 0) {
-        rsi[period] = 100;
-    } else {
-        const rs = avgGain / avgLoss;
-        rsi[period] = 100 - (100 / (1 + rs));
-    }
-
-    // Calculate subsequent RSI values using smoothed moving average
-    for (let i = period; i < changes.length; i++) {
-        avgGain = (avgGain * (period - 1) + gains[i]) / period;
-        avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-
-        if (avgLoss === 0) {
-            rsi[i + 1] = 100;
-        } else {
-            const rs = avgGain / avgLoss;
-            rsi[i + 1] = 100 - (100 / (1 + rs));
-        }
+    let state = createRsiAccumulator(period);
+    for (let index = 0; index < closes.length; index++) {
+        const step = advanceRsiAccumulator(state, closes[index]);
+        state = step.state;
+        rsi[index] = step.value;
     }
 
     return rsi;
 }
 
-/**
- * Find local highs in price data
- */
-function findLocalHighs(
-    values: number[],
-    lookback: number = 5
-): Array<{ index: number; value: number }> {
-    const highs: Array<{ index: number; value: number }> = [];
+export interface TripleDivergenceOptions {
+    /** Bars either side of a candle that must sit above (lows) or below (highs) it. */
+    pivotBars?: number;
+    /** How many RSI points the RSI may drift against the divergence across the touches. */
+    rsiTolerance?: number;
+    /** Largest gap, in bars, between two consecutive touches of the same pattern. */
+    maxGapBars?: number;
+    /** Touches required before a pattern counts. */
+    minTouches?: number;
+    /** First-to-last price move, in average candle ranges, below which the pattern is noise. */
+    minMoveRanges?: number;
+}
 
-    for (let i = lookback; i < values.length - lookback; i++) {
-        let isHigh = true;
-        for (let j = i - lookback; j <= i + lookback; j++) {
-            if (j !== i && values[j] >= values[i]) {
-                isHigh = false;
-                break;
-            }
+const TRIPLE_DIVERGENCE_DEFAULTS: Required<TripleDivergenceOptions> = {
+    pivotBars: 3,
+    rsiTolerance: 3,
+    maxGapBars: 40,
+    minTouches: 3,
+    minMoveRanges: 1,
+};
+
+type DivergenceTouch = NonNullable<RsiDivergence['touches']>[number];
+
+/** Swing lows or highs; on a tie the earlier candle is the swing. */
+function findSwings(values: number[], pivotBars: number, kind: 'low' | 'high'): number[] {
+    const swings: number[] = [];
+    for (let i = pivotBars; i < values.length - pivotBars; i++) {
+        let isSwing = Number.isFinite(values[i]);
+        for (let j = i - pivotBars; j <= i + pivotBars && isSwing; j++) {
+            if (j === i) continue;
+            const beyond = kind === 'low' ? values[j] < values[i] : values[j] > values[i];
+            if (beyond || (values[j] === values[i] && j < i)) isSwing = false;
         }
-        if (isHigh && !isNaN(values[i])) {
-            highs.push({ index: i, value: values[i] });
-        }
+        if (isSwing) swings.push(i);
     }
+    return swings;
+}
 
-    return highs;
+/** The RSI trough (or peak) next to a price swing — the RSI low can sit a bar either side. */
+function rsiNearSwing(rsi: number[], index: number, bullish: boolean): number {
+    const nearby = [rsi[index - 1], rsi[index], rsi[index + 1]].filter((value) => Number.isFinite(value));
+    if (!nearby.length) return NaN;
+    return bullish ? Math.min(...nearby) : Math.max(...nearby);
+}
+
+function toDivergence(
+    type: RsiDivergence['type'],
+    touches: DivergenceTouch[],
+    candles: Candle[],
+    minMoveRanges: number
+): RsiDivergence | null {
+    const first = touches[0];
+    const last = touches[touches.length - 1];
+    const span = candles.slice(first.index, last.index + 1);
+    const averageRange = span.reduce((sum, candle) => sum + (candle.high - candle.low), 0) / span.length;
+    if (Math.abs(last.price - first.price) < averageRange * minMoveRanges) return null;
+
+    // Positive when RSI actually improved against price (the classic case);
+    // around zero is his "RSI stays at the same level" case.
+    const rsiEdge = type === 'BULLISH' ? last.rsi - first.rsi : first.rsi - last.rsi;
+    const strength = Math.round(Math.max(0, Math.min(100,
+        50 + (15 * (touches.length - 3)) + (3 * Math.max(-3, Math.min(10, rsiEdge)))
+    )));
+
+    return {
+        type,
+        pricePoint1: { index: first.index, value: first.price, time: first.time },
+        pricePoint2: { index: last.index, value: last.price, time: last.time },
+        rsiPoint1: { index: first.index, value: first.rsi, time: first.time },
+        rsiPoint2: { index: last.index, value: last.rsi, time: last.time },
+        strength,
+        touches,
+    };
+}
+
+function findDivergenceRuns(
+    candles: Candle[],
+    rsi: number[],
+    type: RsiDivergence['type'],
+    options: Required<TripleDivergenceOptions>
+): RsiDivergence[] {
+    const bullish = type === 'BULLISH';
+    const prices = candles.map((candle) => (bullish ? candle.low : candle.high));
+    const touches: DivergenceTouch[] = findSwings(prices, options.pivotBars, bullish ? 'low' : 'high')
+        .map((index) => ({ index, time: candles[index].time, price: prices[index], rsi: rsiNearSwing(rsi, index, bullish) }))
+        .filter((touch) => Number.isFinite(touch.rsi));
+
+    // Price must keep making lower lows (higher highs) while RSI holds within
+    // the tolerance of both the previous touch and the first one.
+    const rsiHolds = (from: DivergenceTouch, to: DivergenceTouch) => bullish
+        ? to.rsi >= from.rsi - options.rsiTolerance
+        : to.rsi <= from.rsi + options.rsiTolerance;
+    const priceExtends = (from: DivergenceTouch, to: DivergenceTouch) => bullish
+        ? to.price < from.price
+        : to.price > from.price;
+
+    const results: RsiDivergence[] = [];
+    let run: DivergenceTouch[] = [];
+    const flush = () => {
+        if (run.length < options.minTouches) return;
+        const divergence = toDivergence(type, run, candles, options.minMoveRanges);
+        if (divergence) results.push(divergence);
+    };
+
+    for (const touch of touches) {
+        const previous = run[run.length - 1];
+        const step = previous !== undefined &&
+            touch.index - previous.index <= options.maxGapBars &&
+            priceExtends(previous, touch) &&
+            rsiHolds(previous, touch);
+
+        if (step && rsiHolds(run[0], touch)) {
+            run.push(touch);
+            continue;
+        }
+
+        flush();
+        // A step that only drifted too far from the first touch can still
+        // start the next pattern from the previous touch.
+        run = step ? [previous, touch] : [touch];
+    }
+    flush();
+
+    return results;
 }
 
 /**
- * Find local lows in price data
+ * Walid's divergence: three (or more) touches where price keeps making lower
+ * lows while RSI stays at the same level or only a little lower — sellers are
+ * pushing price down without the momentum to back it. Mirror for tops: higher
+ * highs while RSI stays level or only a little higher.
+ *
+ * `rsi` must be aligned with `candles`. Returned oldest first.
  */
-function findLocalLows(
-    values: number[],
-    lookback: number = 5
-): Array<{ index: number; value: number }> {
-    const lows: Array<{ index: number; value: number }> = [];
+export function findTripleDivergences(
+    candles: Candle[],
+    rsi: number[],
+    options: TripleDivergenceOptions = {}
+): RsiDivergence[] {
+    const resolved = { ...TRIPLE_DIVERGENCE_DEFAULTS, ...options };
+    return [
+        ...findDivergenceRuns(candles, rsi, 'BULLISH', resolved),
+        ...findDivergenceRuns(candles, rsi, 'BEARISH', resolved),
+    ].sort((first, second) => first.pricePoint2.index - second.pricePoint2.index);
+}
 
-    for (let i = lookback; i < values.length - lookback; i++) {
-        let isLow = true;
-        for (let j = i - lookback; j <= i + lookback; j++) {
-            if (j !== i && values[j] <= values[i]) {
-                isLow = false;
-                break;
-            }
-        }
-        if (isLow && !isNaN(values[i])) {
-            lows.push({ index: i, value: values[i] });
-        }
-    }
-
-    return lows;
+function latestDivergence(
+    candles: Candle[],
+    rsi: number[],
+    type: RsiDivergence['type'],
+    lookbackBars: number
+): RsiDivergence | null {
+    const recent = findTripleDivergences(candles, rsi).filter((divergence) =>
+        divergence.type === type && divergence.pricePoint2.index >= candles.length - 1 - lookbackBars
+    );
+    return recent[recent.length - 1] ?? null;
 }
 
 /**
- * Detect Bullish Divergence
- * Price makes Lower Low (LL) while RSI makes Higher Low (HL)
- * Indicates potential bullish reversal
+ * Latest bullish three-touch divergence whose last touch is within
+ * `lookbackBars` of the final candle.
  */
 export function detectBullishDivergence(
     candles: Candle[],
     rsi: number[],
-    lookbackBars: number = 20
+    lookbackBars: number = 40
 ): RsiDivergence | null {
-    const startIdx = Math.max(0, candles.length - lookbackBars);
-    const prices = candles.slice(startIdx).map(c => c.low);
-    const rsiSlice = rsi.slice(startIdx);
-
-    const priceLows = findLocalLows(prices, 3);
-    const rsiLows = findLocalLows(rsiSlice, 3);
-
-    if (priceLows.length < 2 || rsiLows.length < 2) {
-        return null;
-    }
-
-    // Compare recent lows
-    const recentPriceLows = priceLows.slice(-2);
-    const recentRsiLows = rsiLows.slice(-2);
-
-    const priceLow1 = recentPriceLows[0];
-    const priceLow2 = recentPriceLows[1];
-    const rsiLow1 = recentRsiLows[0];
-    const rsiLow2 = recentRsiLows[1];
-
-    // Bullish divergence: Price LL, RSI HL
-    if (priceLow2.value < priceLow1.value && rsiLow2.value > rsiLow1.value) {
-        const strength = Math.min(100, Math.abs(rsiLow2.value - rsiLow1.value) * 2);
-
-        return {
-            type: 'BULLISH',
-            pricePoint1: { index: priceLow1.index + startIdx, value: priceLow1.value },
-            pricePoint2: { index: priceLow2.index + startIdx, value: priceLow2.value },
-            rsiPoint1: { index: rsiLow1.index + startIdx, value: rsiLow1.value },
-            rsiPoint2: { index: rsiLow2.index + startIdx, value: rsiLow2.value },
-            strength,
-        };
-    }
-
-    return null;
+    return latestDivergence(candles, rsi, 'BULLISH', lookbackBars);
 }
 
 /**
- * Detect Bearish Divergence
- * Price makes Higher High (HH) while RSI makes Lower High (LH)
- * Indicates potential bearish reversal
+ * Latest bearish three-touch divergence whose last touch is within
+ * `lookbackBars` of the final candle.
  */
 export function detectBearishDivergence(
     candles: Candle[],
     rsi: number[],
-    lookbackBars: number = 20
+    lookbackBars: number = 40
 ): RsiDivergence | null {
-    const startIdx = Math.max(0, candles.length - lookbackBars);
-    const prices = candles.slice(startIdx).map(c => c.high);
-    const rsiSlice = rsi.slice(startIdx);
-
-    const priceHighs = findLocalHighs(prices, 3);
-    const rsiHighs = findLocalHighs(rsiSlice, 3);
-
-    if (priceHighs.length < 2 || rsiHighs.length < 2) {
-        return null;
-    }
-
-    // Compare recent highs
-    const recentPriceHighs = priceHighs.slice(-2);
-    const recentRsiHighs = rsiHighs.slice(-2);
-
-    const priceHigh1 = recentPriceHighs[0];
-    const priceHigh2 = recentPriceHighs[1];
-    const rsiHigh1 = recentRsiHighs[0];
-    const rsiHigh2 = recentRsiHighs[1];
-
-    // Bearish divergence: Price HH, RSI LH
-    if (priceHigh2.value > priceHigh1.value && rsiHigh2.value < rsiHigh1.value) {
-        const strength = Math.min(100, Math.abs(rsiHigh1.value - rsiHigh2.value) * 2);
-
-        return {
-            type: 'BEARISH',
-            pricePoint1: { index: priceHigh1.index + startIdx, value: priceHigh1.value },
-            pricePoint2: { index: priceHigh2.index + startIdx, value: priceHigh2.value },
-            rsiPoint1: { index: rsiHigh1.index + startIdx, value: rsiHigh1.value },
-            rsiPoint2: { index: rsiHigh2.index + startIdx, value: rsiHigh2.value },
-            strength,
-        };
-    }
-
-    return null;
+    return latestDivergence(candles, rsi, 'BEARISH', lookbackBars);
 }
 
 /**
@@ -204,7 +331,7 @@ export function detectBearishDivergence(
 export function detectDivergence(
     candles: Candle[],
     rsiPeriod: number = 14,
-    lookbackBars: number = 20
+    lookbackBars: number = 40
 ): RsiDivergence | null {
     const closes = candles.map(c => c.close);
     const rsi = calculateRSI(closes, rsiPeriod);

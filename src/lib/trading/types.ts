@@ -9,6 +9,8 @@ export interface Candle {
   volume: number;
 }
 
+export type Timeframe = '5m' | '15m' | '1h' | '4h';
+
 export type CandleDirection = 'BULLISH' | 'BEARISH' | 'DOJI';
 
 export interface Zone {
@@ -24,6 +26,23 @@ export interface Zone {
 }
 
 export type FormationType = 'RBR' | 'DBD' | 'DBR' | 'RBD' | null;
+
+export type SignalStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'TOUCHED'
+  | 'FILLED'
+  | 'MISSED'
+  | 'CANCELLED'
+  | 'INVALIDATED';
+
+export type SignalOutcome = 'WIN' | 'LOSS';
+
+export interface ExecutionChecklist {
+  limitOrderPlaced: boolean;
+  stopSet: boolean;
+  takeProfitSet: boolean;
+}
 
 export interface EngulfingPattern {
   type: 'BULLISH' | 'BEARISH';
@@ -42,7 +61,7 @@ export interface PinBar {
 export interface ChainSignal {
   id: string;
   coin: string;
-  timeframe: '15m' | '1h' | '4h';
+  timeframe: Timeframe;
   phase: 'IDENTIFICATION' | 'BREAK' | 'ORIGIN' | 'ENTRY';
   direction: 'LONG' | 'SHORT';
   eventZone: Zone;      // The broken zone (marked as EVENT)
@@ -50,20 +69,38 @@ export interface ChainSignal {
   entryPrice: number;   // Proximal line of origin zone
   stopLoss: number;     // Beyond distal line of origin zone
   takeProfit: number;   // Next opposing zone
+  partialTakeProfit?: {
+    price: number;
+    riskReward: number;
+    closePercent: number;
+  };
   riskRewardRatio: number;
   confidence: number;   // 0-100, boosted by RSI divergence
   hasRsiDivergence: boolean;
+  divergence?: RsiDivergence;
+  higherTimeframe?: Timeframe;
+  triggerCandleTime?: number;
   createdAt: number;
-  status: 'PENDING' | 'APPROVED' | 'FILLED' | 'CANCELLED' | 'INVALIDATED';
+  expiresAt: number;
+  status: SignalStatus;
+  touchedAt?: number;
+  filledAt?: number;
+  outcome?: SignalOutcome;
+  closedAt?: number;
+  executionChecklist?: ExecutionChecklist;
+  sizing?: Pick<TradeParams, 'equity' | 'riskPercent' | 'leverage'>;
 }
 
 export interface RsiDivergence {
   type: 'BULLISH' | 'BEARISH';
-  pricePoint1: { index: number; value: number };
-  pricePoint2: { index: number; value: number };
-  rsiPoint1: { index: number; value: number };
-  rsiPoint2: { index: number; value: number };
+  pricePoint1: { index: number; value: number; time?: number };
+  pricePoint2: { index: number; value: number; time?: number };
+  rsiPoint1: { index: number; value: number; time?: number };
+  rsiPoint2: { index: number; value: number; time?: number };
   strength: number; // 0-100
+  // Every touch of a three-touch divergence, oldest first. Signals saved
+  // before three-touch detection only carry the two end points.
+  touches?: Array<{ index: number; time: number; price: number; rsi: number }>;
 }
 
 export interface TradeParams {
@@ -75,10 +112,11 @@ export interface TradeParams {
 }
 
 export interface PositionSize {
-  positionSize: number;
-  riskAmount: number;
-  stopDistancePercent: number;
-  notionalValue: number;
+  positionSize: number;       // Quantity of the asset/contracts
+  riskAmount: number;         // Maximum planned loss at the stop, before fees/slippage
+  stopDistancePercent: number; // Decimal fraction, e.g. 0.005 = 0.5%
+  notionalValue: number;      // Dollar exposure required to risk riskAmount at the stop
+  marginRequired: number;     // Estimated collateral at the selected leverage
 }
 
 // Utility functions for candle analysis
@@ -108,4 +146,15 @@ export function getLowerWick(candle: Candle): number {
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+export function getTimeframeMs(timeframe: Timeframe): number {
+  const durations: Record<Timeframe, number> = {
+    '5m': 5 * 60 * 1000,
+    '15m': 15 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '4h': 4 * 60 * 60 * 1000,
+  };
+
+  return durations[timeframe];
 }
