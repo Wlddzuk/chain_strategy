@@ -57,7 +57,7 @@ import {
     updateRsiLastPoint,
     type RsiIncrementalState,
 } from '@/lib/chart/indicators';
-import { canUpdateLastCandle } from '@/lib/chart/candle-updates';
+import { canUpdateLastCandle, shouldFitAfterRebuild } from '@/lib/chart/candle-updates';
 import { detectEngulfingPatterns, isDecisiveEngulfing } from '@/lib/trading/pattern-detector';
 import { calculateRSI, findTripleDivergences } from '@/lib/trading/rsi-divergence';
 import { Candle, ChainSignal, RsiDivergence, Zone, getTimeframeMs } from '@/lib/trading/types';
@@ -663,7 +663,6 @@ export default function Chart({
     const ema20Ref = useRef<EmaCursor>(createEmaCursor());
     const ema50Ref = useRef<EmaCursor>(createEmaCursor());
     const previousCandlesRef = useRef<Candle[]>([]);
-    const hasInitialDataRef = useRef(false);
     const overlayFrameRef = useRef<number | null>(null);
     const overlayHandleRef = useRef<OverlayHandle>(null);
     const signalPriceLinesRef = useRef<IPriceLine[]>([]);
@@ -998,6 +997,9 @@ export default function Chart({
             rsiBearDivergenceSeriesRef.current = null;
             engulfingMarkersRef.current = null;
             rsiStateRef.current = null;
+            // The next chart starts with empty series. Without this, a remount on the same instance
+            // (StrictMode, Fast Refresh) sees unchanged candles and paints only the last bar.
+            previousCandlesRef.current = [];
         };
     }, [scheduleOverlay]);
 
@@ -1185,8 +1187,7 @@ export default function Chart({
             value: latest.volume,
             color: latest.close >= latest.open ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)',
         };
-        const canIncrementallyUpdate = hasInitialDataRef.current &&
-            canUpdateLastCandle(previousCandlesRef.current, candles);
+        const canIncrementallyUpdate = canUpdateLastCandle(previousCandlesRef.current, candles);
 
         if (canIncrementallyUpdate) {
             series.update(latestData);
@@ -1268,8 +1269,7 @@ export default function Chart({
                     value: point.lower,
                 })));
             }
-            if (!hasInitialDataRef.current) chart.timeScale().fitContent();
-            hasInitialDataRef.current = true;
+            if (shouldFitAfterRebuild(previousCandlesRef.current, candles)) chart.timeScale().fitContent();
         }
 
         previousCandlesRef.current = candles;
