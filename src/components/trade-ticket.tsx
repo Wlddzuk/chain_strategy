@@ -189,7 +189,6 @@ export default function TradeTicket({ signal, now }: TradeTicketProps) {
 
             <div className="mb-4 rounded-lg border border-[var(--card-border)] bg-[var(--background)] p-3 text-xs">
                 <p>{getEntryGuidance(signal, currentPrice)}</p>
-                <p className="mt-1 text-[var(--text-muted)]">Yellow dot = setup trigger; it does not mean the Entry filled.</p>
                 <p className="mt-2">
                     Gross R:R 1:{signal.riskRewardRatio.toFixed(1)} ·{' '}
                     <span className={netRiskReward.ratio < 1.5 ? 'text-amber-300' : 'text-[var(--text-muted)]'}>

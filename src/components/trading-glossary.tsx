@@ -14,6 +14,8 @@ export const GLOSSARY_ITEMS = [
     ['Missed', 'Price reached the target before it came back to entry, so the plan is too late.'],
     ['Invalidated', 'The setup failed before entry and must no longer be used.'],
     ['Would have won/lost', 'A price-only result for a plan the app did not place on an exchange.'],
+    ['Planning only', 'The app never sends exchange orders. You place the entry, stop, and target yourself.'],
+    ['Yellow dot', 'Marks the candle that triggered the setup. It is not a fill: entry fills only if price returns to the yellow line.'],
 ] as const;
 
 interface TradingGlossaryProps {

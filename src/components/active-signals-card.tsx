@@ -82,9 +82,10 @@ export default function ActiveSignalsCard({ className = '' }: ActiveSignalsCardP
                     type="button"
                     onClick={openRecord}
                     className="press -mx-2 -mb-2 flex items-center justify-between gap-2 rounded-lg border-t border-[var(--hairline)] px-2 pb-2 pt-2.5 text-left text-[11px] text-[var(--text-muted)] transition-colors hover:bg-white/[0.04] hover:text-[var(--foreground)]"
-                    aria-label={`Strategy record: ${record.resolved} resolved trades, ${record.wins} wins, ${record.losses} losses, ${netR}. Open the Record tab.`}
+                    aria-label={`All-time strategy record: ${record.resolved} resolved trades, ${record.wins} wins, ${record.losses} losses, ${netR}. Open the Record tab.`}
                 >
-                    <span className="min-w-0 truncate">
+                    <span className="min-w-0">
+                        All time ·{' '}
                         <span className="font-semibold text-[var(--foreground)]">{record.resolved}</span> trades
                         {' · '}
                         <span className="text-[var(--long-green)]">{record.wins}W</span>

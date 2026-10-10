@@ -152,6 +152,9 @@ interface LiveInteraction {
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
 const CHART_ACCENT = '#4d8dff';
 const PRICE_SCALE_WIDTH = 64;
+// Room for the ENTRY/STOP/TARGET tags the price lines draw beside the price axis.
+const SIGNAL_TAG_WIDTH = 72;
+const ZONE_LABEL_SIZE = 10;
 
 const DIVERGENCE_COLORS = { BULLISH: '#22c55e', BEARISH: '#ef5350' };
 const WICK_COLORS = { BULLISH: '#22d3ee', BEARISH: '#f472b6' };
@@ -525,6 +528,9 @@ function buildOverlayModel(
     const priceY = (price: number) => series.priceToCoordinate(price);
     const timeX = (time: number) => chart.timeScale().timeToCoordinate((time / 1000) as Time);
 
+    // Placed after every zone is known, so labels can step aside for each other.
+    const zoneLabels: Array<{ id: string; y: number; text: string; color: string; inset: number }> = [];
+
     const addZone = (
         zone: Zone,
         options: {
@@ -534,6 +540,8 @@ function buildOverlayModel(
             label: string;
             lineWidth?: number;
             hatch?: boolean;
+            /** Gap kept clear at the right edge, e.g. for the ENTRY/STOP/TARGET tags. */
+            labelInset?: number;
         }
     ) => {
         const proximal = priceY(zone.proximalLine);
@@ -568,14 +576,12 @@ function buildOverlayModel(
             { id: `${idPrefix}-top`, x1: left, y1: top, x2: plotWidth, y2: top, color: options.border, width: options.lineWidth ?? 1 },
             { id: `${idPrefix}-bottom`, x1: left, y1: top + zoneHeight, x2: plotWidth, y2: top + zoneHeight, color: options.border, width: options.lineWidth ?? 1 }
         );
-        model.texts.push({
+        zoneLabels.push({
             id: `${idPrefix}-label`,
-            x: left + 8,
             y: top + 13,
             text: options.label,
             color: options.border,
-            size: 10,
-            weight: 700,
+            inset: options.labelInset ?? 8,
         });
     };
 
@@ -621,6 +627,7 @@ function buildOverlayModel(
                 border: '#94a3b8',
                 label: 'EVENT — broken zone',
                 hatch: true,
+                labelInset: SIGNAL_TAG_WIDTH,
             });
             addZone(signal.originZone, {
                 idPrefix: 'signal-origin-zone',
@@ -628,6 +635,7 @@ function buildOverlayModel(
                 border: '#fbbf24',
                 label: 'ORIGIN — entry zone',
                 lineWidth: 2,
+                labelInset: SIGNAL_TAG_WIDTH,
             });
             const triggerTime = signal.triggerCandleTime ?? signal.createdAt - getTimeframeMs(signal.timeframe);
             const triggerX = timeX(triggerTime);
@@ -656,6 +664,34 @@ function buildOverlayModel(
                 });
             }
         }
+    }
+
+    // Zone labels sit at the right edge, clear of the candles. The plotted plan's
+    // labels claim their spot first; any label that would overlap one already
+    // placed steps left of it.
+    const placedLabels: Array<{ y: number; left: number; right: number }> = [];
+    for (const label of [...zoneLabels].sort((first, second) => second.inset - first.inset)) {
+        const textWidth = estimateLabelWidth(label.text, ZONE_LABEL_SIZE) - 14;
+        let right = plotWidth - label.inset;
+        for (;;) {
+            const blocker = placedLabels.find((placed) =>
+                Math.abs(placed.y - label.y) < ZONE_LABEL_SIZE + 3 &&
+                placed.left < right && placed.right > right - textWidth);
+            if (!blocker || blocker.left - 10 - textWidth < 0) break;
+            right = blocker.left - 10;
+        }
+        placedLabels.push({ y: label.y, left: right - textWidth, right });
+        model.texts.push({
+            id: label.id,
+            x: right,
+            y: label.y,
+            text: label.text,
+            color: label.color,
+            size: ZONE_LABEL_SIZE,
+            weight: 700,
+            anchor: 'end',
+            halo: '#141414',
+        });
     }
 
     const addDivergence = (id: string, divergence: RsiDivergence) => {

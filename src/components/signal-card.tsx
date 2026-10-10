@@ -152,12 +152,7 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
                 <PriceLevel label="Target" value={signal.takeProfit} tone="profit" />
             </dl>
 
-            <div className="mb-4">
-                <p className="text-sm leading-relaxed">{getEntryGuidance(signal, currentPrice)}</p>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
-                    Yellow dot = setup trigger, not an exchange fill.
-                </p>
-            </div>
+            <p className="mb-4 text-sm leading-relaxed">{getEntryGuidance(signal, currentPrice)}</p>
 
             <dl className="mb-4 grid grid-cols-3 gap-3 border-y border-[var(--card-border)] py-3 text-sm">
                 <Metric

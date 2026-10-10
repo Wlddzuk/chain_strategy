@@ -34,6 +34,10 @@ export interface OverlayText {
     size?: number;
     weight?: number;
     opacity?: number;
+    /** 'end' right-aligns the text so it finishes at `x`. */
+    anchor?: 'end';
+    /** Outlines the text in this colour so it stays readable over candles. */
+    halo?: string;
     /** Draws the text as a pill: `x`/`y` become the pill's centre. */
     background?: string;
 }
@@ -145,6 +149,10 @@ const ChartOverlaySvg = forwardRef<OverlayHandle>(function ChartOverlaySvg(_, re
                             fontSize={size}
                             fontWeight={item.weight}
                             opacity={item.opacity}
+                            textAnchor={item.anchor}
+                            stroke={item.halo}
+                            strokeWidth={item.halo ? 3 : undefined}
+                            paintOrder={item.halo ? 'stroke' : undefined}
                         >
                             {item.text}
                         </text>

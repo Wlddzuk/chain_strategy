@@ -5,6 +5,7 @@ import { focusStrategyChart } from '@/lib/ui/focus-chart';
 import {
     formatFormingSetupConsequence,
     formatFormingSetupPricePosition,
+    getZoneBreakSignalDirection,
 } from '@/lib/ui/forming-setup-copy';
 import { formatPrice } from '@/lib/ui/format-price';
 import type { FormingSetup } from '@/lib/ui/setup-forming';
@@ -56,7 +57,8 @@ export function FormingSetupsPanel({ setups }: FormingSetupsPanelProps) {
                                 <span className="font-semibold text-[var(--foreground)]">
                                     {setup.coin} {setup.timeframe}
                                 </span>
-                                <span className={setup.zone.type === 'DEMAND'
+                                {/* Coloured by the trade it leads to: a broken supply zone fires a LONG. */}
+                                <span className={getZoneBreakSignalDirection(setup.zone.type) === 'LONG'
                                     ? 'text-[var(--long-green)]'
                                     : 'text-[var(--short-red)]'}
                                 >
