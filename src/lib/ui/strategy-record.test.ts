@@ -3,6 +3,7 @@ import type { ChainSignal } from '@/lib/trading/types';
 import {
     appendOutcomeHistory,
     backfillStopDistances,
+    calculateMissedPlanStats,
     calculateStrategyBreakdown,
     calculateStrategyRecord,
     getStrategyRecordWarning,
@@ -243,5 +244,40 @@ describe('calculateStrategyBreakdown', () => {
         const total = calculateStrategyRecord(history, 'all', NOW, hyperliquid);
 
         expect(rows.reduce((sum, row) => sum + (row.record.netR ?? 0), 0)).toBeCloseTo(total.netR ?? 0);
+    });
+});
+
+describe('missed plan tracking', () => {
+    it('saves how near price came to a missed entry, in R', () => {
+        const before = [signal('missed')];
+        const after = [signal('missed', 'MISSED', { closedAt: NOW, closestEntryApproachPercent: 0.25 })];
+
+        // The fixture stop is 1% from entry, so 0.25% away is 0.25R.
+        expect(appendOutcomeHistory([], before, after)[0].missedByR).toBeCloseTo(0.25);
+    });
+
+    it('counts near misses and the median gap among tracked missed plans', () => {
+        const missedItem = (id: string, missedByR?: number, closedAt = NOW): OutcomeHistoryItem => ({
+            ...historyItem(id, 'MISSED', closedAt),
+            missedByR,
+        });
+        const history = [
+            missedItem('near', 0.1),
+            missedItem('edge', 0.25),
+            missedItem('far', 1.5),
+            missedItem('untracked'),
+            missedItem('old', 0.05, NOW - 40 * DAY_MS),
+            historyItem('win', 'WIN', NOW),
+        ];
+
+        expect(calculateMissedPlanStats(history, '30d', NOW)).toEqual({
+            missed: 4,
+            tracked: 3,
+            nearMisses: 2,
+            medianMissedByR: 0.25,
+        });
+        expect(calculateMissedPlanStats([], 'all', NOW)).toEqual({
+            missed: 0, tracked: 0, nearMisses: 0, medianMissedByR: null,
+        });
     });
 });

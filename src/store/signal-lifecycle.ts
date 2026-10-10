@@ -22,6 +22,26 @@ export interface SignalLifecycleResult {
 
 const WATCHED_UNFILLED_STATUSES = new Set<ChainSignal['status']>(['PENDING', 'APPROVED']);
 export const TOUCHED_STALE_AFTER_MS = 48 * 60 * 60 * 1000;
+// A new closest approach is saved only when it beats the last by this share of
+// the stop distance, so a slow drift toward entry does not rewrite the signal every tick.
+const CLOSEST_APPROACH_STEP_R = 0.05;
+
+/**
+ * Remembers how near price has come to an unfilled entry. If the plan is later
+ * MISSED, this is how much shallower the entry would have needed to be.
+ */
+function trackClosestApproach(signal: ChainSignal, price: number): ChainSignal {
+    // Measured against entry, like the stop distance, so the two divide into R.
+    const distancePercent = (Math.abs(price - signal.entryPrice) / signal.entryPrice) * 100;
+    if (!Number.isFinite(distancePercent)) return signal;
+
+    const stopDistancePercent = (Math.abs(signal.entryPrice - signal.stopLoss) / signal.entryPrice) * 100;
+    const previous = signal.closestEntryApproachPercent;
+    if (previous !== undefined && distancePercent > previous - (stopDistancePercent * CLOSEST_APPROACH_STEP_R)) {
+        return signal;
+    }
+    return { ...signal, closestEntryApproachPercent: distancePercent };
+}
 
 function reachesEntry(signal: ChainSignal, price: number): boolean {
     return signal.direction === 'LONG'
@@ -119,6 +139,8 @@ export function evaluateSignalLifecycle({
         const previousDistancePercent = Math.abs(
             getMoveToEntryPercent(previousPrice, signal.entryPrice)
         );
+        const tracked = trackClosestApproach(signal, currentPrice);
+        if (tracked !== signal) changed = true;
         const movingTowardEntry = Number.isFinite(previousPrice) &&
             currentDistancePercent < previousDistancePercent;
         const isNearEntry = currentDistancePercent <= approachThresholdPercent;
@@ -132,7 +154,7 @@ export function evaluateSignalLifecycle({
             alerts.push(buildTradeAlertEvent('APPROACHING_ENTRY', signal, currentPrice, now));
         }
 
-        return signal;
+        return tracked;
     });
 
     return {

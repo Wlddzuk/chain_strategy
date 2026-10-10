@@ -26,6 +26,8 @@ export interface OutcomeHistoryItem {
     closedAt: number;
     /** Entry-to-stop distance in percent. Missing on items saved before fees were tracked. */
     stopDistancePercent?: number;
+    /** MISSED only: the nearest price came to entry, in units of the planned risk. */
+    missedByR?: number;
 }
 
 export interface StrategyRecord {
@@ -60,6 +62,7 @@ function toHistoryItem(signal: ChainSignal): OutcomeHistoryItem | null {
         return null;
     }
 
+    const stopDistancePercent = getStopDistancePercent(signal);
     const winRMultiple = Number.isFinite(signal.riskRewardRatio)
         ? Math.max(0, signal.riskRewardRatio)
         : 0;
@@ -72,7 +75,12 @@ function toHistoryItem(signal: ChainSignal): OutcomeHistoryItem | null {
         outcome,
         rMultiple: outcome === 'WIN' ? winRMultiple : outcome === 'LOSS' ? -1 : 0,
         closedAt,
-        stopDistancePercent: getStopDistancePercent(signal),
+        stopDistancePercent,
+        missedByR: outcome === 'MISSED' &&
+            stopDistancePercent !== undefined &&
+            signal.closestEntryApproachPercent !== undefined
+            ? signal.closestEntryApproachPercent / stopDistancePercent
+            : undefined,
     };
 }
 
@@ -295,4 +303,43 @@ export function calculateStrategyBreakdown(
     return rows.sort((first, second) =>
         (second.record.netR ?? second.record.grossR) - (first.record.netR ?? first.record.grossR) ||
         first.key.localeCompare(second.key));
+}
+
+export const NEAR_MISS_MAX_R = 0.25;
+
+export interface MissedPlanStats {
+    missed: number;
+    /** Missed plans that saved how near price came to entry. */
+    tracked: number;
+    /** Tracked plans where price came within NEAR_MISS_MAX_R of the entry. */
+    nearMisses: number;
+    /** Median gap between price and entry across tracked plans, in R. */
+    medianMissedByR: number | null;
+}
+
+/**
+ * How close missed plans came to filling. A missed plan reached its target
+ * without touching entry, so many near misses mean the entry sits too deep.
+ */
+export function calculateMissedPlanStats(
+    history: readonly OutcomeHistoryItem[],
+    recordWindow: StrategyRecordWindow,
+    now: number
+): MissedPlanStats {
+    const cutoff = getWindowCutoff(recordWindow, now);
+    const missed = history.filter((item) => item.outcome === 'MISSED' && isInWindow(item, cutoff));
+    const gaps = missed
+        .map((item) => item.missedByR)
+        .filter((gap): gap is number => gap !== undefined && Number.isFinite(gap))
+        .sort((first, second) => first - second);
+    const middle = Math.floor(gaps.length / 2);
+
+    return {
+        missed: missed.length,
+        tracked: gaps.length,
+        nearMisses: gaps.filter((gap) => gap <= NEAR_MISS_MAX_R).length,
+        medianMissedByR: gaps.length === 0
+            ? null
+            : gaps.length % 2 === 1 ? gaps[middle] : (gaps[middle - 1] + gaps[middle]) / 2,
+    };
 }

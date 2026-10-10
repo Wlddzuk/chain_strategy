@@ -271,6 +271,9 @@ export default function SignalsPanel() {
                                                             <span className="text-[var(--text-muted)]">{signal.timeframe}</span>
                                                             <span className="block text-[11px] text-[var(--text-muted)]">
                                                                 @ ${formatPrice(signal.entryPrice)} · {formatRelativeAge(signal.closedAt ?? signal.createdAt, now)}
+                                                                {signal.status === 'MISSED' && signal.closestEntryApproachPercent !== undefined && (
+                                                                    <> · missed entry by {signal.closestEntryApproachPercent.toFixed(2)}%</>
+                                                                )}
                                                             </span>
                                                         </button>
                                                     </td>

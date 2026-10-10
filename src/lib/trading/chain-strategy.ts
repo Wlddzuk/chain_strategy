@@ -30,6 +30,7 @@ import {
     detectBearishDivergence,
 } from './rsi-divergence';
 import { calculateRiskReward } from './risk-calculator';
+import { agreesWithTrend, detectTrend } from './trend';
 
 const DEFAULT_MIN_RISK_REWARD = 2;
 const DEFAULT_MIN_STOP_DISTANCE_PERCENT = 0.8;
@@ -44,6 +45,9 @@ export interface ChainStrategyState {
 export interface ScanOptions {
     higherTimeframe?: Timeframe;
     higherTimeframeCandles?: Candle[];
+    /** Closed 4h candles. With trendFilterEnabled, setups against their trend are rejected. */
+    trendCandles?: Candle[];
+    trendFilterEnabled?: boolean;
     minRiskReward?: number;
     minStopDistancePercent?: number;
     maxRiskRewardRatio?: number;
@@ -210,6 +214,16 @@ export function scanForSignals(
                 break;
             }
 
+            // Only 4h candles that had closed when the break confirmed may vote.
+            const trend4h = options?.trendCandles
+                ? detectTrend(options.trendCandles.filter((bar) =>
+                    bar.time + getTimeframeMs('4h') <= candle.time + getTimeframeMs(timeframe)
+                ))
+                : null;
+            if (options?.trendFilterEnabled && !agreesWithTrend(direction, trend4h)) {
+                break;
+            }
+
             let confidence = originZone.strength;
             let hasRsiDivergence = false;
             let divergence: RsiDivergence | undefined;
@@ -305,6 +319,7 @@ export function scanForSignals(
                 hasRsiDivergence,
                 divergence,
                 higherTimeframe: options?.higherTimeframe,
+                trend4h: trend4h ?? undefined,
                 triggerCandleTime: candle.time,
                 createdAt: signalCreatedAt,
                 expiresAt,

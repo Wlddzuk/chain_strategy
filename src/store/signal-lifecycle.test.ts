@@ -208,7 +208,10 @@ describe('signal lifecycle', () => {
             previousPrice: 100.4,
         });
 
-        expect(movingToward.signals).toBe(originalSignals);
+        expect(movingToward.signals[0]).toEqual({
+            ...pending,
+            closestEntryApproachPercent: expect.closeTo(0.2, 2),
+        });
         expect(movingToward.alerts.map((alert) => alert.kind)).toEqual([
             'APPROACHING_ENTRY',
         ]);
@@ -237,5 +240,26 @@ describe('signal lifecycle', () => {
         expect(result.alerts.map((alert) => alert.kind)).toEqual([
             'APPROACHING_ENTRY',
         ]);
+    });
+
+    it('remembers the closest approach to an unfilled entry in meaningful steps', () => {
+        const first = evaluate([signal()], 101).signals[0];
+        expect(first.closestEntryApproachPercent).toBeCloseTo(1);
+
+        // 2% stop: 0.05R is 0.1%, so a 0.05% improvement is not worth a rewrite.
+        const sameSignals = [first];
+        expect(evaluate(sameSignals, 100.95).signals).toBe(sameSignals);
+        expect(evaluate(sameSignals, 101.5).signals).toBe(sameSignals);
+
+        const closer = evaluate(sameSignals, 100.5).signals[0];
+        expect(closer.closestEntryApproachPercent).toBeCloseTo(0.5);
+    });
+
+    it('keeps the closest approach on a plan that is then missed', () => {
+        const tracked = evaluate([signal()], 100.5).signals;
+        const missed = evaluate(tracked, 106).signals[0];
+
+        expect(missed.status).toBe('MISSED');
+        expect(missed.closestEntryApproachPercent).toBeCloseTo(0.5);
     });
 });

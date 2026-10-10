@@ -39,6 +39,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         approachThresholdPercent: settings.approachThresholdPercent,
         minStopDistancePercent: settings.minStopDistancePercent,
         maxRiskRewardRatio: settings.maxRiskRewardRatio,
+        trendFilterEnabled: settings.trendFilterEnabled,
         makerFeePercent: settings.makerFeePercent,
         takerFeePercent: settings.takerFeePercent,
         farFromEntryPercent: settings.farFromEntryPercent,
@@ -334,6 +335,25 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 className="input w-full"
                             />
                         </div>
+
+                        <label className="flex cursor-pointer items-start justify-between gap-4">
+                            <span>
+                                <span className="block text-sm font-medium">4h trend filter</span>
+                                <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                                    Reject longs while the 4h trend is down and shorts while it is up.
+                                    A flat trend blocks nothing.
+                                </span>
+                            </span>
+                            <input
+                                type="checkbox"
+                                checked={localSettings.trendFilterEnabled}
+                                onChange={(event) => setLocalSettings((current) => ({
+                                    ...current,
+                                    trendFilterEnabled: event.target.checked,
+                                }))}
+                                className="mt-1 h-4 w-4 accent-[var(--accent)]"
+                            />
+                        </label>
 
                         <div>
                             <label htmlFor="settings-maker-fee" className="block text-sm font-medium mb-2">
