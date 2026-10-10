@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { X } from 'lucide-react';
 import { formatPrice } from '@/lib/ui/format-price';
 import { focusStrategyChart } from '@/lib/ui/focus-chart';
 import { formatFormingSetupPricePosition } from '@/lib/ui/forming-setup-copy';
@@ -97,7 +98,11 @@ export function NowBar() {
         )
         : candidateItem;
 
+    // Acknowledging an entry hit must clear it at once, not after the minimum hold.
+    const releaseHeldItem = () => setStableSelection(null);
+
     const handleOpen = () => {
+        if (item.kind === 'ENTRY_HIT') releaseHeldItem();
         revealNowBarItem(item, {
             setShowAllMarkets,
             acknowledgeEntrySignal,
@@ -156,13 +161,29 @@ export function NowBar() {
             <div className={`border-b transition-colors duration-300 ${className}`}>
                 <div className="mx-auto max-w-[1800px] px-4 sm:px-6">
                     {active ? (
-                        <button
-                            type="button"
-                            onClick={handleOpen}
-                            className="w-full py-2 text-left text-sm font-bold tracking-wide sm:text-center"
-                        >
-                            {content}
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={handleOpen}
+                                className="min-w-0 flex-1 py-2 text-left text-sm font-bold tracking-wide sm:text-center"
+                            >
+                                {content}
+                            </button>
+                            {item.kind === 'ENTRY_HIT' && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        releaseHeldItem();
+                                        acknowledgeEntrySignal(item.signal.id);
+                                    }}
+                                    aria-label={`Dismiss entry hit alert for ${item.signal.coin}`}
+                                    title="Dismiss"
+                                    className="press shrink-0 rounded-md p-1.5 hover:bg-white/10"
+                                >
+                                    <X aria-hidden="true" className="h-4 w-4" />
+                                </button>
+                            )}
+                        </div>
                     ) : (
                         <p className="py-2 text-sm font-semibold sm:text-center">{content}</p>
                     )}

@@ -13,16 +13,32 @@ import {
 } from '@/lib/ui/active-signals';
 import { focusStrategyChart } from '@/lib/ui/focus-chart';
 import { formatPrice } from '@/lib/ui/format-price';
+import { formatRMultiple, getRToneClass } from '@/lib/ui/format-r';
 import { deriveFormingSetups } from '@/lib/ui/setup-forming';
+import {
+    getHistoryCategory,
+    getHistoryNetR,
+    type HistoryFilter,
+} from '@/lib/ui/signal-history';
 import { getChartScopeEmptyState } from '@/lib/ui/signals-panel-copy';
 import { sortActiveSignalsByActionability } from '@/lib/ui/trade-metrics';
 import { getTradePlanKey } from '@/lib/trading/signal-identity';
 import {
+    formatRelativeAge,
     getSignalStatusBadgeClass,
     getSignalStatusLabel,
     isRecentSignal,
 } from '@/lib/ui/signal-display';
 import { type SidebarTab, useTradingStore } from '@/store/trading-store';
+
+const HISTORY_LIMIT = 40;
+const HISTORY_FILTERS: ReadonlyArray<{ value: HistoryFilter; label: string }> = [
+    { value: 'all', label: 'All' },
+    { value: 'won', label: 'Won' },
+    { value: 'lost', label: 'Lost' },
+    { value: 'missed', label: 'Missed' },
+    { value: 'other', label: 'Other' },
+];
 
 export default function SignalsPanel() {
     const selectedCoin = useTradingStore((state) => state.selectedCoin);
@@ -38,7 +54,10 @@ export default function SignalsPanel() {
     const setSidebarTab = useTradingStore((state) => state.setSidebarTab);
     const prices = useTradingStore((state) => state.prices);
     const strategyStates = useTradingStore((state) => state.strategyStates);
+    const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
+    const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
     const [now, setNow] = useState(0);
+    const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
 
     useEffect(() => {
         const firstTick = window.setTimeout(() => setNow(Date.now()), 0);
@@ -82,8 +101,11 @@ export default function SignalsPanel() {
             const key = `${getTradePlanKey(signal)}:${signal.status}:${signal.outcome ?? 'none'}`;
             if (!uniquePlans.has(key)) uniquePlans.set(key, signal);
         }
-        return Array.from(uniquePlans.values()).slice(0, 8);
+        return Array.from(uniquePlans.values()).slice(0, HISTORY_LIMIT);
     }, [signals]);
+    const filteredActivity = historyFilter === 'all'
+        ? recentActivity
+        : recentActivity.filter((signal) => getHistoryCategory(signal) === historyFilter);
 
     const formingSetups = useMemo(
         () => deriveFormingSetups(strategyStates, prices),
@@ -107,10 +129,7 @@ export default function SignalsPanel() {
             aria-label="Trade signals"
         >
             <div className="flex items-center justify-between gap-3">
-                <div>
-                    <h2 className="text-lg font-semibold">Trade Signals</h2>
-                    <p className="text-xs text-[var(--text-muted)]">Planning only — no exchange orders</p>
-                </div>
+                <h2 className="text-lg font-semibold">Trade Signals</h2>
                 <div className="flex items-center gap-2">
                     <TradingGlossary />
                     <button
@@ -193,45 +212,81 @@ export default function SignalsPanel() {
                 {sidebarTab === 'history' && (
                     <section aria-label="Recent activity">
                         <div className="card">
-                            {recentActivity.length === 0 ? (
+                            <div className="mb-3 flex flex-wrap gap-1" aria-label="Filter history">
+                                {HISTORY_FILTERS.map((option) => {
+                                    const count = option.value === 'all'
+                                        ? recentActivity.length
+                                        : recentActivity.filter((signal) => getHistoryCategory(signal) === option.value).length;
+                                    return (
+                                        <button
+                                            key={option.value}
+                                            type="button"
+                                            aria-pressed={historyFilter === option.value}
+                                            onClick={() => setHistoryFilter(option.value)}
+                                            className={`rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+                                                historyFilter === option.value
+                                                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                                                    : 'border-[var(--card-border)] text-[var(--text-muted)] hover:text-white'
+                                            }`}
+                                        >
+                                            {option.label} <span className="font-mono tabular-nums">{count}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            {filteredActivity.length === 0 ? (
                                 <p className="text-sm text-[var(--text-muted)] text-center py-4">
-                                    No missed, closed, dismissed, or invalidated plans yet
+                                    {recentActivity.length === 0
+                                        ? 'No missed, closed, dismissed, or invalidated plans yet'
+                                        : 'No plans match this filter'}
                                 </p>
                             ) : (
-                                <div className="space-y-3">
-                                    {recentActivity.map((signal) => (
-                                        <button
-                                            type="button"
-                                            key={`${signal.id}-${signal.status}-${signal.outcome ?? 'open'}`}
-                                            onClick={() => handleFocus(signal.id)}
-                                            className="w-full flex items-center justify-between gap-3 text-sm text-left"
-                                        >
-                                            <span className="min-w-0">
-                                                <span>{signal.coin} {signal.direction}</span>{' '}
-                                                <span className="text-[var(--text-muted)]">
-                                                    {signal.timeframe} @ ${formatPrice(signal.entryPrice)}
-                                                </span>
-                                                {signal.status === 'TOUCHED' && (
-                                                    <span className={signal.outcome === 'LOSS' ? 'text-[var(--short-red)]' : signal.outcome === 'WIN' ? 'text-[var(--long-green)]' : 'text-[var(--text-muted)]'}>
-                                                        {' '}ENTRY HIT → {signal.outcome === 'WIN'
-                                                            ? `would have WON +${signal.riskRewardRatio.toFixed(1)}R`
-                                                            : signal.outcome === 'LOSS'
-                                                                ? 'would have LOST −1.0R'
-                                                                : 'stale after 48h'}
-                                                    </span>
-                                                )}
-                                                {signal.status !== 'TOUCHED' && signal.outcome && (
-                                                    <span className={signal.outcome === 'WIN' ? 'text-[var(--long-green)]' : 'text-[var(--short-red)]'}>
-                                                        {' '}{signal.outcome === 'WIN' ? `+${signal.riskRewardRatio.toFixed(1)}R` : '−1.0R'}
-                                                    </span>
-                                                )}
-                                            </span>
-                                            <span className={`badge shrink-0 ${getSignalStatusBadgeClass(signal)}`}>
-                                                {getSignalStatusLabel(signal, now)}
-                                            </span>
-                                        </button>
-                                    ))}
-                                </div>
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="text-left text-[11px] text-[var(--text-muted)]">
+                                            <th scope="col" className="pb-1.5 font-medium">Plan</th>
+                                            <th scope="col" className="pb-1.5 text-right font-medium">Result</th>
+                                            <th scope="col" className="pb-1.5 pl-3 text-right font-medium">R after fees</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {filteredActivity.map((signal) => {
+                                            const netR = getHistoryNetR(signal, { makerFeePercent, takerFeePercent });
+                                            return (
+                                                <tr
+                                                    key={`${signal.id}-${signal.status}-${signal.outcome ?? 'open'}`}
+                                                    className="border-t border-[var(--card-border)]"
+                                                >
+                                                    <td className="py-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleFocus(signal.id)}
+                                                            className="text-left hover:underline"
+                                                        >
+                                                            <span className={signal.direction === 'LONG' ? 'text-[var(--long-green)]' : 'text-[var(--short-red)]'}>
+                                                                {signal.direction}
+                                                            </span>{' '}
+                                                            {signal.coin}{' '}
+                                                            <span className="text-[var(--text-muted)]">{signal.timeframe}</span>
+                                                            <span className="block text-[11px] text-[var(--text-muted)]">
+                                                                @ ${formatPrice(signal.entryPrice)} · {formatRelativeAge(signal.closedAt ?? signal.createdAt, now)}
+                                                            </span>
+                                                        </button>
+                                                    </td>
+                                                    <td className="py-2 text-right">
+                                                        <span className={`badge ${getSignalStatusBadgeClass(signal)}`}>
+                                                            {getSignalStatusLabel(signal, now)}
+                                                        </span>
+                                                    </td>
+                                                    <td className={`py-2 pl-3 text-right font-mono font-semibold tabular-nums ${netR === null ? 'text-[var(--text-muted)]' : getRToneClass(netR)}`}>
+                                                        {netR === null ? '—' : `${formatRMultiple(netR)}R`}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
                             )}
                             <p className="mt-4 border-t border-[var(--card-border)] pt-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
                                 Outcomes are based on market price touches, not your actual fills or exchange account.
