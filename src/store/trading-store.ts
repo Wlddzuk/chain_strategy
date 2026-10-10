@@ -49,6 +49,7 @@ export interface TradingSettings {
     approachThresholdPercent: number;
     minStopDistancePercent: number;
     maxRiskRewardRatio: number;
+    trendFilterEnabled: boolean;
     makerFeePercent: number;
     takerFeePercent: number;
     farFromEntryPercent: number;
@@ -170,6 +171,7 @@ const initialSettings: TradingSettings = {
     approachThresholdPercent: 0.25,
     minStopDistancePercent: MIN_STOP_DISTANCE_FLOOR_PERCENT,
     maxRiskRewardRatio: 8,
+    trendFilterEnabled: true,
     ...HYPERLIQUID_BASE_FEES,
     farFromEntryPercent: 3,
     scanTimeframes: ['1h'],
@@ -629,6 +631,11 @@ export const useTradingStore = create<TradingState>()(
                             (candle) => candle.time + getTimeframeMs(higherTimeframe) <= Date.now()
                         )
                         : undefined;
+                    const trendCandles = timeframe === '4h'
+                        ? closedCandles
+                        : state.candleData[coin]?.['4h']?.candles.filter(
+                            (candle) => candle.time + getTimeframeMs('4h') <= Date.now()
+                        );
                     const preScanSignals = scanState.signals;
 
                     const result = scanForSignals(
@@ -639,6 +646,8 @@ export const useTradingStore = create<TradingState>()(
                         {
                             higherTimeframe: higherTimeframe || undefined,
                             higherTimeframeCandles,
+                            trendCandles,
+                            trendFilterEnabled: state.settings.trendFilterEnabled,
                             minRiskReward: 2,
                             minStopDistancePercent: state.settings.minStopDistancePercent,
                             maxRiskRewardRatio: state.settings.maxRiskRewardRatio,

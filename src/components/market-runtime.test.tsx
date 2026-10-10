@@ -27,10 +27,12 @@ it('retries a failed background scan within the same candle boundary without ham
     expect(getCandleSnapshot).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
     expect(getCandleSnapshot).toHaveBeenCalledTimes(1);
+    // The retry loads the 1h candles, then the 4h candles the trend filter reads.
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(getCandleSnapshot).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(getCandleSnapshot).toHaveBeenCalledTimes(2);
+    expect(getCandleSnapshot).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(getCandleSnapshot).mock.calls.map((call) => call[1])).toEqual(['1h', '1h', '4h']);
 });
 
 it('keeps scanning for new setups while the tab is hidden', async () => {

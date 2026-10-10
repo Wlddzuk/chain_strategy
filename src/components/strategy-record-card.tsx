@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTradingStore } from '@/store/trading-store';
 import { formatRMultiple, getRToneClass } from '@/lib/ui/format-r';
 import {
+    calculateMissedPlanStats,
     calculateStrategyBreakdown,
     calculateStrategyRecord,
     LOW_SAMPLE_WARNING,
+    NEAR_MISS_MAX_R,
     type OutcomeHistoryItem,
     type StrategyBreakdownDimension,
     type StrategyRecordWindow,
@@ -61,6 +63,10 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
             ? calculateStrategyRecord(history, recordWindow, referenceNow, { makerFeePercent, takerFeePercent })
             : null,
         [clockReady, history, recordWindow, referenceNow, makerFeePercent, takerFeePercent]
+    );
+    const missedStats = useMemo(
+        () => clockReady ? calculateMissedPlanStats(history, recordWindow, referenceNow) : null,
+        [clockReady, history, recordWindow, referenceNow]
     );
     const breakdown = useMemo(
         () => clockReady
@@ -204,6 +210,46 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
                             <p className="mt-3 text-xs text-[var(--text-muted)]">No closed plans in this window yet.</p>
                         )}
                     </div>
+
+                    {missedStats !== null && missedStats.missed > 0 && (
+                        <div className="mt-4 border-t border-[var(--card-border)] pt-3 text-xs">
+                            <h4 className="font-semibold">Missed plans</h4>
+                            <p className="mt-1 leading-relaxed text-[var(--text-muted)]">
+                                {missedStats.missed} {missedStats.missed === 1 ? 'plan' : 'plans'} ran to target without reaching entry,
+                                against {record.resolved} that filled.
+                            </p>
+                            {missedStats.tracked > 0 && missedStats.medianMissedByR !== null ? (
+                                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+                                    <div>
+                                        <dt className="text-[var(--text-muted)]">Near misses (within {NEAR_MISS_MAX_R}R)</dt>
+                                        <dd className="mt-0.5 font-mono text-base font-semibold text-amber-200">
+                                            {missedStats.nearMisses}
+                                            <span className="ml-1 text-xs">of {missedStats.tracked}</span>
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="text-[var(--text-muted)]">Typical gap to entry</dt>
+                                        <dd className="mt-0.5 font-mono text-base font-semibold">
+                                            {missedStats.medianMissedByR.toFixed(2)}R
+                                        </dd>
+                                    </div>
+                                </dl>
+                            ) : (
+                                <p className="mt-2 leading-relaxed text-[var(--text-muted)]">
+                                    How close price came to entry is saved for plans missed from now on.
+                                </p>
+                            )}
+                            {missedStats.tracked > 0 && (
+                                <p className="mt-3 leading-relaxed text-[var(--text-muted)]">
+                                    The gap is the nearest price came to entry, measured against the stop distance.
+                                    Many near misses mean the entry sits too deep in the zone.
+                                    {missedStats.tracked < missedStats.missed && (
+                                        <> {missedStats.missed - missedStats.tracked} older missed {missedStats.missed - missedStats.tracked === 1 ? 'plan was' : 'plans were'} not measured.</>
+                                    )}
+                                </p>
+                            )}
+                        </div>
+                    )}
 
                     {record.isLowSample && (
                         <p className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-100">

@@ -229,3 +229,58 @@ describe('zone age', () => {
         expect(later.invalidatedSignals).toHaveLength(1);
     });
 });
+
+describe('4h trend filter', () => {
+    const FOUR_HOURS = 4 * HOUR;
+
+    /** Sixty closed 4h candles ending before the setup, stepping by `step` per bar. */
+    function trendCandles(step: number): Candle[] {
+        return Array.from({ length: 60 }, (_, index) => {
+            const close = 100 + (index * step);
+            return {
+                time: START - ((60 - index) * FOUR_HOURS),
+                open: close, high: close, low: close, close, volume: 1000,
+            };
+        });
+    }
+
+    const options = { minStopDistancePercent: 0, maxRiskRewardRatio: 100 };
+
+    it('rejects a long while the 4h trend is down and keeps it while the trend is up', () => {
+        const against = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, trendCandles: trendCandles(-1), trendFilterEnabled: true,
+        });
+        expect(against.newSignals).toHaveLength(0);
+
+        const withTrend = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, trendCandles: trendCandles(1), trendFilterEnabled: true,
+        });
+        expect(withTrend.newSignals).toHaveLength(1);
+        expect(withTrend.newSignals[0].trend4h).toBe('UP');
+    });
+
+    it('records the trend but blocks nothing when the filter is off or the trend is unknown', () => {
+        const filterOff = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, trendCandles: trendCandles(-1), trendFilterEnabled: false,
+        });
+        expect(filterOff.newSignals[0].trend4h).toBe('DOWN');
+
+        const tooFewCandles = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, trendCandles: trendCandles(-1).slice(0, 10), trendFilterEnabled: true,
+        });
+        expect(tooFewCandles.newSignals).toHaveLength(1);
+        expect(tooFewCandles.newSignals[0].trend4h).toBeUndefined();
+    });
+
+    it('ignores 4h candles that had not closed when the break confirmed', () => {
+        // A crash that only happens after the break must not veto the setup.
+        const laterCrash = Array.from({ length: 60 }, (_, index) => ({
+            time: START + ((index + 2) * FOUR_HOURS),
+            open: 10, high: 10, low: 10, close: 10, volume: 1000,
+        }));
+        const result = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, trendCandles: [...trendCandles(1), ...laterCrash], trendFilterEnabled: true,
+        });
+        expect(result.newSignals).toHaveLength(1);
+    });
+});

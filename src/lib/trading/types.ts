@@ -81,10 +81,12 @@ export interface ChainSignal {
   hasRsiDivergence: boolean;
   divergence?: RsiDivergence;
   higherTimeframe?: Timeframe;
+  trend4h?: 'UP' | 'DOWN' | 'FLAT'; // 4h trend when the break confirmed
   triggerCandleTime?: number;
   createdAt: number;
   expiresAt: number;
   status: SignalStatus;
+  closestEntryApproachPercent?: number; // Nearest price came to entry while unfilled, in %
   touchedAt?: number;
   filledAt?: number;
   outcome?: SignalOutcome;

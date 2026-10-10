@@ -130,6 +130,7 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
                     <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">
                         Fired {formatRelativeAge(signal.createdAt, now)}
                         {signal.higherTimeframe && <> · HTF {signal.higherTimeframe}</>}
+                        {signal.trend4h && <> · 4h trend {signal.trend4h.toLowerCase()}</>}
                     </p>
                 </div>
                 <div className="flex max-w-[45%] flex-wrap justify-end gap-1.5">
