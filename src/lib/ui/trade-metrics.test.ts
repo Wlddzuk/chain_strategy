@@ -34,21 +34,22 @@ function signal(
 }
 
 describe('calculateNetRiskReward', () => {
-    it('adds round-trip fees to risk and subtracts them from reward', () => {
-        const result = calculateNetRiskReward(100, 99, 104, 0.05);
+    const fees = { makerFeePercent: 0.015, takerFeePercent: 0.045 };
 
-        expect(result.netRiskPercent).toBeCloseTo(1.1);
-        expect(result.netRewardPercent).toBeCloseTo(3.9);
-        expect(result.ratio).toBeCloseTo(3.9 / 1.1);
+    it('charges maker entry + taker stop on risk and maker entry + maker target on reward', () => {
+        const result = calculateNetRiskReward(100, 99, 104, fees);
+
+        expect(result.netRiskPercent).toBeCloseTo(1.06);
+        expect(result.netRewardPercent).toBeCloseTo(3.97);
+        expect(result.ratio).toBeCloseTo(3.97 / 1.06);
     });
 
     it('returns zero instead of a negative or non-finite ratio', () => {
-        expect(calculateNetRiskReward(100, 99, 100.05, 0.05)).toEqual({
-            netRiskPercent: 1.1,
-            netRewardPercent: 0,
-            ratio: 0,
-        });
-        expect(calculateNetRiskReward(0, 0, 0, 0.05)).toEqual({
+        const result = calculateNetRiskReward(100, 99, 100.02, fees);
+        expect(result.netRiskPercent).toBeCloseTo(1.06);
+        expect(result.netRewardPercent).toBe(0);
+        expect(result.ratio).toBe(0);
+        expect(calculateNetRiskReward(0, 0, 0, fees)).toEqual({
             netRiskPercent: 0,
             netRewardPercent: 0,
             ratio: 0,

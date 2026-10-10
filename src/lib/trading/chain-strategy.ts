@@ -32,7 +32,7 @@ import {
 import { calculateRiskReward } from './risk-calculator';
 
 const DEFAULT_MIN_RISK_REWARD = 2;
-const DEFAULT_MIN_STOP_DISTANCE_PERCENT = 0.4;
+const DEFAULT_MIN_STOP_DISTANCE_PERCENT = 0.8;
 const DEFAULT_MAX_RISK_REWARD = 8;
 
 export interface ChainStrategyState {

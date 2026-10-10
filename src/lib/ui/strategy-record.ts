@@ -1,8 +1,10 @@
-import type {
-    ChainSignal,
-    SignalOutcome,
-    Timeframe,
+import {
+    getTimeframeMs,
+    type ChainSignal,
+    type SignalOutcome,
+    type Timeframe,
 } from '@/lib/trading/types';
+import { getPlanFeePercents, HYPERLIQUID_BASE_FEES, type FeeRates } from '@/lib/ui/trade-metrics';
 
 export const OUTCOME_HISTORY_LIMIT = 500;
 export const MIN_RESOLVED_FOR_PERCENTAGE = 5;
@@ -22,6 +24,8 @@ export interface OutcomeHistoryItem {
     outcome: OutcomeHistoryResult;
     rMultiple: number;
     closedAt: number;
+    /** Entry-to-stop distance in percent. Missing on items saved before fees were tracked. */
+    stopDistancePercent?: number;
 }
 
 export interface StrategyRecord {
@@ -29,7 +33,11 @@ export interface StrategyRecord {
     wins: number;
     losses: number;
     winRate: number | null;
-    netR: number;
+    grossR: number;
+    /** Total R after fees, or null when no trade has a saved stop size to price fees from. */
+    netR: number | null;
+    /** Resolved trades whose fees were priced from the median stop of the others. */
+    feeEstimatedCount: number;
     missed: number;
     showWinRate: boolean;
     isLowSample: boolean;
@@ -38,6 +46,11 @@ export interface StrategyRecord {
 function getHistoryResult(signal: ChainSignal): OutcomeHistoryResult | null {
     if (signal.outcome === 'WIN' || signal.outcome === 'LOSS') return signal.outcome;
     return signal.status === 'MISSED' ? 'MISSED' : null;
+}
+
+function getStopDistancePercent(signal: ChainSignal): number | undefined {
+    const distance = (Math.abs(signal.entryPrice - signal.stopLoss) / signal.entryPrice) * 100;
+    return Number.isFinite(distance) && distance > 0 ? distance : undefined;
 }
 
 function toHistoryItem(signal: ChainSignal): OutcomeHistoryItem | null {
@@ -59,6 +72,7 @@ function toHistoryItem(signal: ChainSignal): OutcomeHistoryItem | null {
         outcome,
         rMultiple: outcome === 'WIN' ? winRMultiple : outcome === 'LOSS' ? -1 : 0,
         closedAt,
+        stopDistancePercent: getStopDistancePercent(signal),
     };
 }
 
@@ -129,6 +143,33 @@ export function appendOutcomeHistory(
     return normalizeHistory([...previousHistory, ...uniqueAdditions]);
 }
 
+/** Fills in stop sizes for older history items whose signal is still saved. */
+export function backfillStopDistances(
+    history: OutcomeHistoryItem[],
+    signals: readonly ChainSignal[]
+): OutcomeHistoryItem[] {
+    if (history.every((item) => item.stopDistancePercent !== undefined)) return history;
+
+    const stopBySignalId = new Map(
+        signals.map((signal) => [signal.id, getStopDistancePercent(signal)])
+    );
+    return history.map((item) => item.stopDistancePercent === undefined
+        ? { ...item, stopDistancePercent: stopBySignalId.get(item.signalId) }
+        : item);
+}
+
+function getMedianStopDistancePercent(history: readonly OutcomeHistoryItem[]): number | null {
+    const known = history
+        .map((item) => item.stopDistancePercent)
+        .filter((distance): distance is number =>
+            distance !== undefined && Number.isFinite(distance) && distance > 0)
+        .sort((first, second) => first - second);
+    if (known.length === 0) return null;
+
+    const middle = Math.floor(known.length / 2);
+    return known.length % 2 === 1 ? known[middle] : (known[middle - 1] + known[middle]) / 2;
+}
+
 export function hasEnoughResolvedPlansForPercentage(resolved: number): boolean {
     return Number.isFinite(resolved) && resolved >= MIN_RESOLVED_FOR_PERCENTAGE;
 }
@@ -139,37 +180,48 @@ export function getStrategyRecordWarning(resolved: number): string | null {
         : LOW_SAMPLE_WARNING;
 }
 
-export function calculateStrategyRecord(
-    history: readonly OutcomeHistoryItem[],
-    recordWindow: StrategyRecordWindow,
-    now: number
-): StrategyRecord {
+function getWindowCutoff(recordWindow: StrategyRecordWindow, now: number): number {
     const windowMs = recordWindow === '7d'
         ? 7 * DAY_MS
         : recordWindow === '30d'
             ? 30 * DAY_MS
             : Number.POSITIVE_INFINITY;
-    const cutoff = Number.isFinite(now) && Number.isFinite(windowMs)
+    return Number.isFinite(now) && Number.isFinite(windowMs)
         ? now - windowMs
         : Number.NEGATIVE_INFINITY;
+}
 
+function isInWindow(item: OutcomeHistoryItem, cutoff: number): boolean {
+    return Number.isFinite(item.closedAt) && item.closedAt >= cutoff;
+}
+
+/** medianStop prices fees for items saved without their own stop size. */
+function summarizeRecord(
+    items: readonly OutcomeHistoryItem[],
+    fees: FeeRates,
+    medianStop: number | null
+): StrategyRecord {
     let wins = 0;
     let losses = 0;
     let missed = 0;
-    let netR = 0;
+    let grossR = 0;
+    let feeR = 0;
+    let feeEstimatedCount = 0;
+    const planFees = getPlanFeePercents(fees);
 
-    for (const item of history) {
-        if (!Number.isFinite(item.closedAt) || item.closedAt < cutoff) continue;
-
-        if (item.outcome === 'WIN') {
-            wins += 1;
-            if (Number.isFinite(item.rMultiple)) netR += item.rMultiple;
-        } else if (item.outcome === 'LOSS') {
-            losses += 1;
-            if (Number.isFinite(item.rMultiple)) netR += item.rMultiple;
-        } else if (item.outcome === 'MISSED') {
+    for (const item of items) {
+        if (item.outcome === 'MISSED') {
             missed += 1;
+            continue;
         }
+        if (item.outcome === 'WIN') wins += 1;
+        else losses += 1;
+        if (Number.isFinite(item.rMultiple)) grossR += item.rMultiple;
+
+        // Fees are a fixed share of notional, so they cost more R the tighter the stop.
+        const stop = item.stopDistancePercent ?? medianStop;
+        if (item.stopDistancePercent === undefined) feeEstimatedCount += 1;
+        if (stop !== null) feeR += (item.outcome === 'WIN' ? planFees.win : planFees.loss) / stop;
     }
 
     const resolved = wins + losses;
@@ -180,9 +232,67 @@ export function calculateStrategyRecord(
         wins,
         losses,
         winRate: showWinRate ? (wins / resolved) * 100 : null,
-        netR,
+        grossR,
+        netR: medianStop === null ? null : grossR - feeR,
+        feeEstimatedCount: medianStop === null ? 0 : feeEstimatedCount,
         missed,
         showWinRate,
         isLowSample: getStrategyRecordWarning(resolved) !== null,
     };
+}
+
+export function calculateStrategyRecord(
+    history: readonly OutcomeHistoryItem[],
+    recordWindow: StrategyRecordWindow,
+    now: number,
+    fees: FeeRates = HYPERLIQUID_BASE_FEES
+): StrategyRecord {
+    const cutoff = getWindowCutoff(recordWindow, now);
+    return summarizeRecord(
+        history.filter((item) => isInWindow(item, cutoff)),
+        fees,
+        getMedianStopDistancePercent(history)
+    );
+}
+
+export type StrategyBreakdownDimension = 'timeframe' | 'coin' | 'direction';
+
+export interface StrategyBreakdownRow {
+    key: string;
+    record: StrategyRecord;
+}
+
+/**
+ * Splits the windowed record by one dimension. Timeframes list shortest first;
+ * coins and directions list best R first so the losers sink to the bottom.
+ */
+export function calculateStrategyBreakdown(
+    history: readonly OutcomeHistoryItem[],
+    dimension: StrategyBreakdownDimension,
+    recordWindow: StrategyRecordWindow,
+    now: number,
+    fees: FeeRates = HYPERLIQUID_BASE_FEES
+): StrategyBreakdownRow[] {
+    const cutoff = getWindowCutoff(recordWindow, now);
+    const groups = new Map<string, OutcomeHistoryItem[]>();
+    for (const item of history) {
+        if (!isInWindow(item, cutoff)) continue;
+        const group = groups.get(item[dimension]);
+        if (group) group.push(item);
+        else groups.set(item[dimension], [item]);
+    }
+
+    const medianStop = getMedianStopDistancePercent(history);
+    const rows = Array.from(groups, ([key, items]) => ({
+        key,
+        record: summarizeRecord(items, fees, medianStop),
+    }));
+
+    if (dimension === 'timeframe') {
+        return rows.sort((first, second) =>
+            getTimeframeMs(first.key as Timeframe) - getTimeframeMs(second.key as Timeframe));
+    }
+    return rows.sort((first, second) =>
+        (second.record.netR ?? second.record.grossR) - (first.record.netR ?? first.record.grossR) ||
+        first.key.localeCompare(second.key));
 }

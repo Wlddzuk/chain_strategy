@@ -1,10 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useTradingStore } from '@/store/trading-store';
 import {
+    calculateStrategyBreakdown,
     calculateStrategyRecord,
     LOW_SAMPLE_WARNING,
     type OutcomeHistoryItem,
+    type StrategyBreakdownDimension,
     type StrategyRecordWindow,
 } from '@/lib/ui/strategy-record';
 
@@ -15,6 +18,15 @@ const RECORD_WINDOWS: ReadonlyArray<{
     { value: '7d', label: '7d' },
     { value: '30d', label: '30d' },
     { value: 'all', label: 'All' },
+];
+
+const BREAKDOWN_DIMENSIONS: ReadonlyArray<{
+    value: StrategyBreakdownDimension;
+    label: string;
+}> = [
+    { value: 'timeframe', label: 'Timeframe' },
+    { value: 'coin', label: 'Coin' },
+    { value: 'direction', label: 'Direction' },
 ];
 
 interface StrategyRecordCardProps {
@@ -28,8 +40,15 @@ function formatRMultiple(value: number): string {
     return '0.0';
 }
 
+function getRToneClass(value: number): string {
+    if (value > 0) return 'text-[var(--long-green)]';
+    if (value < 0) return 'text-[var(--short-red)]';
+    return '';
+}
+
 export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
     const [recordWindow, setRecordWindow] = useState<StrategyRecordWindow>('30d');
+    const [breakdownDimension, setBreakdownDimension] = useState<StrategyBreakdownDimension>('timeframe');
     const [clientNow, setClientNow] = useState(0);
 
     useEffect(() => {
@@ -43,13 +62,28 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
         };
     }, [now]);
 
+    const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
+    const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
+
     const referenceNow = now ?? clientNow;
     const clockReady = now !== undefined || clientNow > 0;
     const record = useMemo(
         () => clockReady
-            ? calculateStrategyRecord(history, recordWindow, referenceNow)
+            ? calculateStrategyRecord(history, recordWindow, referenceNow, { makerFeePercent, takerFeePercent })
             : null,
-        [clockReady, history, recordWindow, referenceNow]
+        [clockReady, history, recordWindow, referenceNow, makerFeePercent, takerFeePercent]
+    );
+    const breakdown = useMemo(
+        () => clockReady
+            ? calculateStrategyBreakdown(
+                history,
+                breakdownDimension,
+                recordWindow,
+                referenceNow,
+                { makerFeePercent, takerFeePercent }
+            )
+            : [],
+        [clockReady, history, breakdownDimension, recordWindow, referenceNow, makerFeePercent, takerFeePercent]
     );
 
     return (
@@ -98,15 +132,15 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
                     <dd className="mt-0.5 font-mono text-base font-semibold text-[var(--short-red)]">{record.losses}</dd>
                 </div>
                 <div>
-                    <dt className="text-[var(--text-muted)]">Total R (gross)</dt>
-                    <dd className={`mt-0.5 font-mono text-base font-semibold ${
-                        record.netR > 0
-                            ? 'text-[var(--long-green)]'
-                            : record.netR < 0
-                                ? 'text-[var(--short-red)]'
-                                : ''
-                    }`}>
-                        {formatRMultiple(record.netR)}
+                    <dt className="text-[var(--text-muted)]">Total R after fees</dt>
+                    <dd className={`mt-0.5 font-mono text-base font-semibold ${getRToneClass(record.netR ?? 0)}`}>
+                        {record.netR === null ? '—' : formatRMultiple(record.netR)}
+                    </dd>
+                </div>
+                <div>
+                    <dt className="text-[var(--text-muted)]">Total R before fees</dt>
+                    <dd className={`mt-0.5 font-mono text-base font-semibold ${getRToneClass(record.grossR)}`}>
+                        {formatRMultiple(record.grossR)}
                     </dd>
                 </div>
                 <div>
@@ -114,6 +148,73 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
                     <dd className="mt-0.5 font-mono text-base font-semibold text-amber-200">{record.missed}</dd>
                 </div>
                     </dl>
+
+                    <div className="mt-4 border-t border-[var(--card-border)] pt-3">
+                        <div className="flex items-center justify-between gap-3">
+                            <h4 className="text-xs font-semibold">Split by</h4>
+                            <div className="flex rounded-lg border border-[var(--card-border)] p-0.5" aria-label="Split record by">
+                                {BREAKDOWN_DIMENSIONS.map((option) => (
+                                    <button
+                                        key={option.value}
+                                        type="button"
+                                        aria-pressed={breakdownDimension === option.value}
+                                        onClick={() => setBreakdownDimension(option.value)}
+                                        className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                                            breakdownDimension === option.value
+                                                ? 'bg-[var(--accent)] text-white'
+                                                : 'text-[var(--text-muted)] hover:text-white'
+                                        }`}
+                                    >
+                                        {option.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {breakdown.length > 0 ? (
+                            <table className="mt-3 w-full text-xs">
+                                <thead>
+                                    <tr className="text-left text-[11px] text-[var(--text-muted)]">
+                                        <th scope="col" className="pb-1.5 font-medium">
+                                            {BREAKDOWN_DIMENSIONS.find((option) => option.value === breakdownDimension)?.label}
+                                        </th>
+                                        <th scope="col" className="pb-1.5 text-right font-medium">W / L</th>
+                                        <th scope="col" className="pb-1.5 text-right font-medium">Win %</th>
+                                        <th scope="col" className="pb-1.5 text-right font-medium">Missed</th>
+                                        <th scope="col" className="pb-1.5 text-right font-medium">R after fees</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {breakdown.map(({ key, record: row }) => {
+                                        const rowR = row.netR ?? row.grossR;
+                                        return (
+                                            <tr key={key} className="border-t border-[var(--card-border)]">
+                                                <th scope="row" className="py-1.5 text-left font-sans font-medium">
+                                                    {breakdownDimension === 'direction'
+                                                        ? key === 'LONG' ? 'Long' : 'Short'
+                                                        : key}
+                                                </th>
+                                                <td className="py-1.5 text-right">
+                                                    <span className="text-[var(--long-green)]">{row.wins}</span>
+                                                    {' / '}
+                                                    <span className="text-[var(--short-red)]">{row.losses}</span>
+                                                </td>
+                                                <td className="py-1.5 text-right">
+                                                    {row.winRate === null ? '—' : `${row.winRate.toFixed(0)}%`}
+                                                </td>
+                                                <td className="py-1.5 text-right text-amber-200">{row.missed}</td>
+                                                <td className={`py-1.5 text-right font-semibold ${getRToneClass(rowR)}`}>
+                                                    {row.resolved === 0 ? '—' : formatRMultiple(rowR)}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <p className="mt-3 text-xs text-[var(--text-muted)]">No closed plans in this window yet.</p>
+                        )}
+                    </div>
 
                     {record.isLowSample && (
                         <p className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-100">
@@ -127,7 +228,12 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
 
             <p className="mt-4 border-t border-[var(--card-border)] pt-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
                 Outcomes are based on market price touches, not your actual fills or exchange account.
-                {' '}R assumes the full position exits at the final target or stop; fees, funding, slippage, and partial exits are excluded.
+                {' '}R assumes the full position exits at the final target or stop.
+                {' '}After-fees R charges the maker fee on the limit entry and limit target and the taker fee on the stop;
+                funding, slippage, and partial exits are excluded.
+                {record !== null && record.feeEstimatedCount > 0 && (
+                    <> Fees for {record.feeEstimatedCount} older {record.feeEstimatedCount === 1 ? 'trade' : 'trades'} use the median stop size, because their own was not saved.</>
+                )}
             </p>
         </section>
     );

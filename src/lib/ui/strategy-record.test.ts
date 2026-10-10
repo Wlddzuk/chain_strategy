@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { ChainSignal } from '@/lib/trading/types';
 import {
     appendOutcomeHistory,
+    backfillStopDistances,
+    calculateStrategyBreakdown,
     calculateStrategyRecord,
     getStrategyRecordWarning,
     hasEnoughResolvedPlansForPercentage,
@@ -65,7 +67,7 @@ describe('appendOutcomeHistory', () => {
             signal('missed', 'MISSED', { closedAt: NOW + 2 }),
         ];
 
-        expect(appendOutcomeHistory([], previous, next)).toEqual([
+        expect(appendOutcomeHistory([], previous, next)).toMatchObject([
             historyItem('win', 'WIN', NOW, 2.5),
             historyItem('loss', 'LOSS', NOW + 1),
             historyItem('missed', 'MISSED', NOW + 2),
@@ -111,21 +113,21 @@ describe('calculateStrategyRecord', () => {
             wins: 1,
             losses: 1,
             winRate: null,
-            netR: 2,
+            grossR: 2,
             missed: 0,
         });
         expect(calculateStrategyRecord(history, '30d', NOW)).toMatchObject({
             resolved: 3,
             wins: 2,
             losses: 1,
-            netR: 4,
+            grossR: 4,
             missed: 1,
         });
         expect(calculateStrategyRecord(history, 'all', NOW)).toMatchObject({
             resolved: 4,
             wins: 2,
             losses: 2,
-            netR: 3,
+            grossR: 3,
             missed: 1,
         });
     });
@@ -158,5 +160,88 @@ describe('calculateStrategyRecord', () => {
         expect(hasEnoughResolvedPlansForPercentage(5)).toBe(true);
         expect(getStrategyRecordWarning(9)).toBe(LOW_SAMPLE_WARNING);
         expect(getStrategyRecordWarning(10)).toBeNull();
+    });
+
+    it('charges Hyperliquid fees in R, scaled by each trade\'s stop size', () => {
+        const fees = { makerFeePercent: 0.015, takerFeePercent: 0.045 };
+        const priced = [
+            { ...historyItem('win', 'WIN', NOW, 3), stopDistancePercent: 0.5 },
+            { ...historyItem('loss', 'LOSS', NOW), stopDistancePercent: 1 },
+        ];
+
+        const record = calculateStrategyRecord(priced, 'all', NOW, fees);
+
+        expect(record.grossR).toBe(2);
+        // Win: 0.03% / 0.5% = 0.06R. Loss: 0.06% / 1% = 0.06R.
+        expect(record.netR).toBeCloseTo(2 - 0.06 - 0.06);
+        expect(record.feeEstimatedCount).toBe(0);
+    });
+
+    it('prices older trades from the median stop and reports no net R without any stop data', () => {
+        const fees = { makerFeePercent: 0.015, takerFeePercent: 0.045 };
+        const legacyLoss = historyItem('legacy-loss', 'LOSS', NOW);
+        const mixed = [
+            { ...historyItem('win', 'WIN', NOW, 3), stopDistancePercent: 0.6 },
+            legacyLoss,
+        ];
+
+        const record = calculateStrategyRecord(mixed, 'all', NOW, fees);
+        expect(record.netR).toBeCloseTo(2 - (0.03 / 0.6) - (0.06 / 0.6));
+        expect(record.feeEstimatedCount).toBe(1);
+
+        expect(calculateStrategyRecord([legacyLoss], 'all', NOW, fees)).toMatchObject({
+            grossR: -1,
+            netR: null,
+            feeEstimatedCount: 0,
+        });
+    });
+});
+
+describe('backfillStopDistances', () => {
+    it('fills missing stop sizes from saved signals and keeps identity when nothing is missing', () => {
+        const legacy = [historyItem('kept', 'WIN', NOW), historyItem('rotated-out', 'LOSS', NOW)];
+
+        const filled = backfillStopDistances(legacy, [signal('kept', 'TOUCHED')]);
+
+        expect(filled[0].stopDistancePercent).toBeCloseTo(1);
+        expect(filled[1].stopDistancePercent).toBeUndefined();
+
+        const complete = [{ ...legacy[0], stopDistancePercent: 1 }];
+        expect(backfillStopDistances(complete, [])).toBe(complete);
+    });
+});
+
+describe('calculateStrategyBreakdown', () => {
+    const fees = { makerFeePercent: 0, takerFeePercent: 0 };
+    const history: OutcomeHistoryItem[] = [
+        { ...historyItem('btc-1h-win', 'WIN', NOW, 3), stopDistancePercent: 1 },
+        { ...historyItem('eth-5m-loss', 'LOSS', NOW), coin: 'ETH', timeframe: '5m', direction: 'SHORT', stopDistancePercent: 1 },
+        { ...historyItem('eth-5m-miss', 'MISSED', NOW), coin: 'ETH', timeframe: '5m', direction: 'SHORT' },
+        { ...historyItem('old-4h-win', 'WIN', NOW - 40 * DAY_MS, 2), timeframe: '4h', stopDistancePercent: 1 },
+    ];
+
+    it('splits by timeframe, shortest first, within the window', () => {
+        const rows = calculateStrategyBreakdown(history, 'timeframe', '30d', NOW, fees);
+
+        expect(rows.map((row) => row.key)).toEqual(['5m', '1h']);
+        expect(rows[0].record).toMatchObject({ wins: 0, losses: 1, missed: 1, netR: -1 });
+        expect(rows[1].record).toMatchObject({ wins: 1, losses: 0, missed: 0, netR: 3 });
+        expect(calculateStrategyBreakdown(history, 'timeframe', 'all', NOW, fees).map((row) => row.key))
+            .toEqual(['5m', '1h', '4h']);
+    });
+
+    it('splits by coin and direction with the best R first', () => {
+        expect(calculateStrategyBreakdown(history, 'coin', 'all', NOW, fees).map((row) => [row.key, row.record.netR]))
+            .toEqual([['BTC', 5], ['ETH', -1]]);
+        expect(calculateStrategyBreakdown(history, 'direction', 'all', NOW, fees).map((row) => row.key))
+            .toEqual(['LONG', 'SHORT']);
+    });
+
+    it('charges each group the same fees the total record does', () => {
+        const hyperliquid = { makerFeePercent: 0.015, takerFeePercent: 0.045 };
+        const rows = calculateStrategyBreakdown(history, 'coin', 'all', NOW, hyperliquid);
+        const total = calculateStrategyRecord(history, 'all', NOW, hyperliquid);
+
+        expect(rows.reduce((sum, row) => sum + (row.record.netR ?? 0), 0)).toBeCloseTo(total.netR ?? 0);
     });
 });

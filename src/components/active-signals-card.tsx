@@ -17,15 +17,19 @@ export default function ActiveSignalsCard({ className = '' }: ActiveSignalsCardP
     const watchedMarketCount = useTradingStore((state) => state.availableCoins.length);
     const outcomeHistory = useTradingStore((state) => state.outcomeHistory);
     const setSidebarTab = useTradingStore((state) => state.setSidebarTab);
+    const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
+    const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
     // 'all' ignores the clock, so the summary is stable between renders.
     const record = useMemo(
-        () => calculateStrategyRecord(outcomeHistory, 'all', 0),
-        [outcomeHistory]
+        () => calculateStrategyRecord(outcomeHistory, 'all', 0, { makerFeePercent, takerFeePercent }),
+        [outcomeHistory, makerFeePercent, takerFeePercent]
     );
-    const netR = record.netR > 0
-        ? `+${record.netR.toFixed(1)}R`
-        : record.netR < 0
-            ? `−${Math.abs(record.netR).toFixed(1)}R`
+    // After fees whenever stop sizes are known, matching the Record tab.
+    const totalR = record.netR ?? record.grossR;
+    const netR = totalR > 0
+        ? `+${totalR.toFixed(1)}R`
+        : totalR < 0
+            ? `−${Math.abs(totalR).toFixed(1)}R`
             : '0.0R';
 
     const openRecord = () => {
@@ -87,7 +91,7 @@ export default function ActiveSignalsCard({ className = '' }: ActiveSignalsCardP
                         {' '}
                         <span className="text-[var(--short-red)]">{record.losses}L</span>
                         {' · '}
-                        <span className={record.netR > 0 ? 'text-[var(--long-green)]' : record.netR < 0 ? 'text-[var(--short-red)]' : ''}>
+                        <span className={totalR > 0 ? 'text-[var(--long-green)]' : totalR < 0 ? 'text-[var(--short-red)]' : ''}>
                             {netR}
                         </span>
                     </span>
