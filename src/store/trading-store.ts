@@ -24,8 +24,10 @@ import {
 } from '../lib/ui/setup-forming';
 import {
     appendOutcomeHistory,
+    backfillStopDistances,
     type OutcomeHistoryItem,
 } from '../lib/ui/strategy-record';
+import { HYPERLIQUID_BASE_FEES } from '../lib/ui/trade-metrics';
 import { evaluateSignalLifecycle } from './signal-lifecycle';
 
 export type Timeframe = TradingTimeframe;
@@ -47,7 +49,8 @@ export interface TradingSettings {
     approachThresholdPercent: number;
     minStopDistancePercent: number;
     maxRiskRewardRatio: number;
-    feePercentPerSide: number;
+    makerFeePercent: number;
+    takerFeePercent: number;
     farFromEntryPercent: number;
     scanTimeframes: Timeframe[];
     breakFormingAlertsEnabled: boolean;
@@ -147,6 +150,9 @@ interface TradingState {
     reset: () => void;
 }
 
+// Tighter stops hand most of the edge to fees: a 0.4% stop loses about 0.14R per loss.
+const MIN_STOP_DISTANCE_FLOOR_PERCENT = 0.8;
+
 const initialSettings: TradingSettings = {
     accountEquity: 10000,
     riskPercent: 1,
@@ -162,9 +168,9 @@ const initialSettings: TradingSettings = {
     actionOutcomeSoundsEnabled: true,
     browserNotificationsEnabled: false,
     approachThresholdPercent: 0.25,
-    minStopDistancePercent: 0.4,
+    minStopDistancePercent: MIN_STOP_DISTANCE_FLOOR_PERCENT,
     maxRiskRewardRatio: 8,
-    feePercentPerSide: 0.045,
+    ...HYPERLIQUID_BASE_FEES,
     farFromEntryPercent: 3,
     scanTimeframes: ['1h'],
     breakFormingAlertsEnabled: false,
@@ -969,8 +975,24 @@ export const useTradingStore = create<TradingState>()(
         {
             name: 'chain-trader-storage',
             storage: createJSONStorage(() => createDebouncedStorage()),
-            version: 2,
-            migrate: (persistedState) => persistedState ?? {},
+            version: 3,
+            migrate: (persistedState, version) => {
+                const persisted = (persistedState ?? {}) as Partial<TradingState>;
+                if (version >= 3 || !persisted.settings) return persisted;
+                // v3: the single per-side fee became Hyperliquid maker/taker rates,
+                // and the minimum stop was raised so fees stop eating the edge.
+                const settings: Partial<TradingSettings> & { feePercentPerSide?: number } = {
+                    ...persisted.settings,
+                };
+                delete settings.feePercentPerSide;
+                if (settings.minStopDistancePercent !== undefined) {
+                    settings.minStopDistancePercent = Math.max(
+                        MIN_STOP_DISTANCE_FLOOR_PERCENT,
+                        settings.minStopDistancePercent
+                    );
+                }
+                return { ...persisted, settings: settings as TradingSettings };
+            },
             partialize: (state) => ({
                 selectedCoin: state.selectedCoin,
                 selectedTimeframe: state.selectedTimeframe,
@@ -999,7 +1021,10 @@ export const useTradingStore = create<TradingState>()(
                 const persisted = (persistedState ?? {}) as Partial<TradingState>;
                 const signals = persisted.signals ?? currentState.signals;
                 const outcomeHistory = appendOutcomeHistory(
-                    persisted.outcomeHistory ?? currentState.outcomeHistory,
+                    backfillStopDistances(
+                        persisted.outcomeHistory ?? currentState.outcomeHistory,
+                        signals
+                    ),
                     [],
                     signals
                 );

@@ -7,11 +7,32 @@ export interface NetRiskRewardMetrics {
     ratio: number;
 }
 
+export interface FeeRates {
+    makerFeePercent: number;
+    takerFeePercent: number;
+}
+
+/** Hyperliquid perps base tier: under $5M 14-day volume, no staking discount. */
+export const HYPERLIQUID_BASE_FEES: FeeRates = {
+    makerFeePercent: 0.015,
+    takerFeePercent: 0.045,
+};
+
+/**
+ * Fees for a full plan as a percent of notional. The entry and target rest as
+ * limit orders (maker); the stop exits at market (taker).
+ */
+export function getPlanFeePercents(fees: FeeRates): { win: number; loss: number } {
+    const maker = Number.isFinite(fees.makerFeePercent) ? Math.max(0, fees.makerFeePercent) : 0;
+    const taker = Number.isFinite(fees.takerFeePercent) ? Math.max(0, fees.takerFeePercent) : 0;
+    return { win: maker * 2, loss: maker + taker };
+}
+
 export function calculateNetRiskReward(
     entryPrice: number,
     stopLoss: number,
     takeProfit: number,
-    feePercentPerSide: number
+    fees: FeeRates
 ): NetRiskRewardMetrics {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
         return { netRiskPercent: 0, netRewardPercent: 0, ratio: 0 };
@@ -19,12 +40,9 @@ export function calculateNetRiskReward(
 
     const stopDistancePercent = (Math.abs(entryPrice - stopLoss) / entryPrice) * 100;
     const targetDistancePercent = (Math.abs(takeProfit - entryPrice) / entryPrice) * 100;
-    const fee = Number.isFinite(feePercentPerSide)
-        ? Math.max(0, feePercentPerSide)
-        : 0;
-    const roundTripFeePercent = fee * 2;
-    const netRiskPercent = stopDistancePercent + roundTripFeePercent;
-    const netRewardPercent = Math.max(0, targetDistancePercent - roundTripFeePercent);
+    const planFees = getPlanFeePercents(fees);
+    const netRiskPercent = stopDistancePercent + planFees.loss;
+    const netRewardPercent = Math.max(0, targetDistancePercent - planFees.win);
     const ratio = netRiskPercent > 0 && netRewardPercent > 0
         ? netRewardPercent / netRiskPercent
         : 0;

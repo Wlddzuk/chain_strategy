@@ -34,7 +34,8 @@ export default function TradeTicket({ signal, now }: TradeTicketProps) {
     const storedAccountEquity = useTradingStore((state) => state.settings.accountEquity);
     const storedRiskPercent = useTradingStore((state) => state.settings.riskPercent);
     const storedLeverage = useTradingStore((state) => state.settings.leverage);
-    const feePercentPerSide = useTradingStore((state) => state.settings.feePercentPerSide);
+    const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
+    const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
     const approachThresholdPercent = useTradingStore((state) => state.settings.approachThresholdPercent);
     const sizeDecimals = useTradingStore((state) => state.sizeDecimals[signal.coin]);
     // Keep live lifecycle evaluation in the store; the ticket refreshes this
@@ -68,7 +69,7 @@ export default function TradeTicket({ signal, now }: TradeTicketProps) {
         signal.entryPrice,
         signal.stopLoss,
         signal.takeProfit,
-        feePercentPerSide
+        { makerFeePercent, takerFeePercent }
     );
     const potentialProfit = calculatePnL(
         position.positionSize,

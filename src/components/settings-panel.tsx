@@ -39,7 +39,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         approachThresholdPercent: settings.approachThresholdPercent,
         minStopDistancePercent: settings.minStopDistancePercent,
         maxRiskRewardRatio: settings.maxRiskRewardRatio,
-        feePercentPerSide: settings.feePercentPerSide,
+        makerFeePercent: settings.makerFeePercent,
+        takerFeePercent: settings.takerFeePercent,
         farFromEntryPercent: settings.farFromEntryPercent,
         scanTimeframes: settings.scanTimeframes,
         breakFormingAlertsEnabled: settings.breakFormingAlertsEnabled,
@@ -59,8 +60,10 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         localSettings.minStopDistancePercent <= 25 &&
         localSettings.maxRiskRewardRatio >= 2 &&
         localSettings.maxRiskRewardRatio <= 100 &&
-        localSettings.feePercentPerSide >= 0 &&
-        localSettings.feePercentPerSide <= 1 &&
+        localSettings.makerFeePercent >= 0 &&
+        localSettings.makerFeePercent <= 1 &&
+        localSettings.takerFeePercent >= 0 &&
+        localSettings.takerFeePercent <= 1 &&
         localSettings.farFromEntryPercent >= 0.1 &&
         localSettings.farFromEntryPercent <= 25 &&
         (localSettings.walletAddress.trim() === '' || /^0x[0-9a-fA-F]{40}$/.test(localSettings.walletAddress.trim()));
@@ -333,24 +336,47 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                         </div>
 
                         <div>
-                            <label htmlFor="settings-fee" className="block text-sm font-medium mb-2">
-                                Fee estimate per side (%)
+                            <label htmlFor="settings-maker-fee" className="block text-sm font-medium mb-2">
+                                Maker fee (%)
                             </label>
                             <input
-                                id="settings-fee"
+                                id="settings-maker-fee"
                                 type="number"
-                                value={localSettings.feePercentPerSide}
+                                value={localSettings.makerFeePercent}
                                 onChange={(event) => setLocalSettings((current) => ({
                                     ...current,
-                                    feePercentPerSide: parseFloat(event.target.value) || 0,
+                                    makerFeePercent: parseFloat(event.target.value) || 0,
                                 }))}
                                 min={0}
                                 max={1}
-                                step={0.005}
+                                step={0.001}
                                 className="input w-full"
                             />
                             <p className="text-xs text-[var(--text-muted)] mt-1">
-                                Used only for the net R:R estimate; strategy targets remain unchanged.
+                                Charged on the limit entry and the limit target.
+                            </p>
+                        </div>
+
+                        <div>
+                            <label htmlFor="settings-taker-fee" className="block text-sm font-medium mb-2">
+                                Taker fee (%)
+                            </label>
+                            <input
+                                id="settings-taker-fee"
+                                type="number"
+                                value={localSettings.takerFeePercent}
+                                onChange={(event) => setLocalSettings((current) => ({
+                                    ...current,
+                                    takerFeePercent: parseFloat(event.target.value) || 0,
+                                }))}
+                                min={0}
+                                max={1}
+                                step={0.001}
+                                className="input w-full"
+                            />
+                            <p className="text-xs text-[var(--text-muted)] mt-1">
+                                Charged when the stop exits at market. Defaults are Hyperliquid&apos;s base perp tier;
+                                lower them if you have a volume or staking discount. Used for net R only.
                             </p>
                         </div>
 

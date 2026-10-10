@@ -31,7 +31,8 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
     const accountEquity = useTradingStore((state) => signal.sizing?.equity ?? state.settings.accountEquity);
     const riskPercent = useTradingStore((state) => signal.sizing?.riskPercent ?? state.settings.riskPercent);
     const leverage = useTradingStore((state) => signal.sizing?.leverage ?? state.settings.leverage);
-    const feePercentPerSide = useTradingStore((state) => state.settings.feePercentPerSide);
+    const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
+    const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
     const farFromEntryPercent = useTradingStore((state) => state.settings.farFromEntryPercent);
     const approachThresholdPercent = useTradingStore((state) => state.settings.approachThresholdPercent);
     const sizeDecimals = useTradingStore((state) => state.sizeDecimals[signal.coin]);
@@ -70,7 +71,7 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
         signal.entryPrice,
         signal.stopLoss,
         signal.takeProfit,
-        feePercentPerSide
+        { makerFeePercent, takerFeePercent }
     );
     const absoluteDistanceToEntry = Math.abs(moveToEntryPercent);
     const isFarFromEntry = signal.status !== 'TOUCHED' &&

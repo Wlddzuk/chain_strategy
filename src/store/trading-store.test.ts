@@ -415,4 +415,22 @@ describe('trading store final-spec persistence', () => {
         expect(hydrated.settings.preferredVoiceUri).toBe('');
         expect(hydrated.outcomeHistory).toEqual([]);
     });
+
+    it('migrates pre-v3 settings to the 0.8% minimum stop and Hyperliquid maker/taker fees', async () => {
+        const options = useTradingStore.persist.getOptions();
+        const legacy = {
+            settings: { minStopDistancePercent: 0.4, feePercentPerSide: 0.045 },
+        };
+
+        const migrated = await options.migrate?.(legacy, 2);
+        const hydrated = options.merge?.(migrated, useTradingStore.getState()) as ReturnType<typeof useTradingStore.getState>;
+
+        expect(hydrated.settings.minStopDistancePercent).toBe(0.8);
+        expect(hydrated.settings.makerFeePercent).toBe(0.015);
+        expect(hydrated.settings.takerFeePercent).toBe(0.045);
+        expect(hydrated.settings).not.toHaveProperty('feePercentPerSide');
+
+        const wider = await options.migrate?.({ settings: { minStopDistancePercent: 1.5 } }, 2) as typeof legacy;
+        expect(wider.settings.minStopDistancePercent).toBe(1.5);
+    });
 });
