@@ -25,6 +25,7 @@ const GUIDE_SECTIONS = [
     ['screen', 'The screen'],
     ['statuses', 'Status strips'],
     ['sounds', 'Sounds'],
+    ['filters', 'Filters'],
     ['workflow', 'Daily workflow'],
     ['rules', 'Golden rules'],
     ['limits', 'Limits'],
@@ -198,16 +199,16 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                         </h3>
                         <ul className="list-disc space-y-2 pl-5 marker:text-[var(--accent)]">
                             <li>
-                                <strong>Now bar</strong> (under the header): the single most important thing right now. If it says ENTRY HIT, act. If it says &quot;Closest setup...&quot;, relax and watch.
+                                <strong>Now bar</strong> (under the header): the single most important thing right now. If it says ENTRY HIT, act. If it says &quot;Closest setup...&quot;, relax and watch. Tap the × to clear an ENTRY HIT once you have seen it.
                             </li>
                             <li>
-                                <strong>Stats row</strong>: current price, number of active plans with the strategy record underneath (tap it to open the Record tab), your risk settings, connection health, scanner status.
+                                <strong>Stats row</strong>: current price with a small chart of the last 48 candles, number of active plans with the all-time strategy record underneath (tap it to open the Record tab), your risk settings, connection health, scanner status.
                             </li>
                             <li>
                                 <strong>Chart</strong>: candles plus the zones the strategy found. Toggle RSI, Bollinger Bands, EMAs with the toolbar buttons.
                             </li>
                             <li>
-                                <strong>Right-hand tabs</strong>: switch between four views instead of scrolling. <strong>Signals</strong> are the active plans — each card leads with a colored status strip, the only thing you need to read at a glance. <strong>Forming</strong> is early warnings: price is near a zone, nothing confirmed yet, watch don&apos;t act. <strong>Record</strong> is the tool&apos;s own scoreboard of how its plans would have performed — check it weekly. <strong>History</strong> is finished plans.
+                                <strong>Right-hand tabs</strong>: switch between four views instead of scrolling. <strong>Signals</strong> are the active plans — each card leads with a colored status strip, the only thing you need to read at a glance. <strong>Forming</strong> is early warnings: price is near a zone, nothing confirmed yet, watch don&apos;t act; each row is colored by the trade it would lead to, green for a long and red for a short. <strong>Record</strong> is the tool&apos;s own scoreboard of how its plans would have performed, in R after fees, split by timeframe, coin, and direction — check it weekly. <strong>History</strong> is finished plans, with filters and the R each one made after fees.
                             </li>
                         </ul>
                     </section>
@@ -283,6 +284,25 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                         </ul>
                     </section>
 
+                    <section aria-labelledby={`${titleId}-filters`}>
+                        <h3
+                            id={`${titleId}-filters`}
+                            className="mb-3 scroll-mt-4 text-lg font-bold tracking-[-0.01em] text-white"
+                        >
+                            What the scanner filters out
+                        </h3>
+                        <p>
+                            Not every pattern becomes a signal. A setup is dropped before you ever see it when:
+                        </p>
+                        <ul className="mt-3 list-disc space-y-2 pl-5 marker:text-[var(--accent)]">
+                            <li><strong>The stop is too tight</strong> — closer than 0.8% to the entry. Fees eat too much of a small stop.</li>
+                            <li><strong>The reward is out of range</strong> — less than 1:2, or above the maximum R:R.</li>
+                        </ul>
+                        <p className="mt-3">
+                            You can change the minimum stop and the maximum R:R in Settings, under Setup filters.
+                        </p>
+                    </section>
+
                     <section aria-labelledby={`${titleId}-workflow`}>
                         <h3
                             id={`${titleId}-workflow`}
@@ -297,7 +317,7 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                             <li>Tick the three checkboxes on the plan (Entry order placed / Stop set / Target set).</li>
                             <li>Walk away. The tool will tell you: <strong>entry hit</strong> (you&apos;re in), <strong>invalidated</strong> (cancel your exchange orders NOW), <strong>target/stop hit</strong> (trade over).</li>
                             <li>Never act on an ⚠️ ENTRY HIT card you didn&apos;t already plan — that trade is gone.</li>
-                            <li>Check the <strong>Strategy record</strong> weekly. It shows how plans performed. If the record is bad over many trades, stop and re-evaluate — do not argue with your own data.</li>
+                            <li>Check the <strong>Strategy record</strong> weekly. It shows how plans performed after fees, and which timeframes, coins, and directions earn. If the record is bad over many trades, stop and re-evaluate — do not argue with your own data.</li>
                         </ol>
                     </section>
 
@@ -311,7 +331,7 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                         <ol className="list-decimal space-y-3 pl-5 marker:font-bold marker:text-amber-300">
                             <li><strong>INVALIDATED or MISSED = cancel your exchange orders immediately.</strong> The setup is dead; a resting limit order can fill into a falling market.</li>
                             <li><strong>Never chase a hit Entry.</strong> The Stop-to-Target math only works from the planned Entry.</li>
-                            <li><strong>Most setups will be MISSED — that is normal.</strong> The strategy places limit orders at retracement levels; price often runs without coming back. Missing a trade costs nothing. A bad entry costs money.</li>
+                            <li><strong>Most setups will be MISSED — that is normal.</strong> The strategy places limit orders at retracement levels; price often runs without coming back. Missing a trade costs nothing. A bad entry costs money. The Record tab counts near misses: many of them suggest the entry sits too deep in the zone, which is a reason to review the strategy, not to chase.</li>
                         </ol>
                     </section>
 
@@ -323,7 +343,7 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                             Honest limits of this tool
                         </h3>
                         <ul className="list-disc space-y-2 pl-5 marker:text-[var(--accent)]">
-                            <li>Outcomes (&quot;would have won/lost&quot;) are based on price touches, not your real fills. Slippage, funding, and partial fills are not simulated.</li>
+                            <li>Outcomes (&quot;would have won/lost&quot;) are based on price touches, not your real fills. R after fees assumes Hyperliquid&apos;s base fees with a limit entry, a limit target, and a market stop; change the rates in Settings if yours differ. Slippage, funding, and partial fills are not simulated.</li>
                             <li>A signal is a pattern match, not a prophecy. The Strategy record tells you over time whether the pattern earns.</li>
                             <li>If the scoreboard shows fewer than ~10 resolved plans, it is too early to judge anything.</li>
                         </ul>
