@@ -62,7 +62,7 @@ describe('HowToUseDrawer', () => {
         expect(markup).toContain('aria-modal="true"');
         expect(markup.match(/<table/g)).toHaveLength(1);
         expect(markup.match(/<th(?:\s|>)/g)).toHaveLength(9);
-        expect(markup.match(/<ul/g)).toHaveLength(4);
+        expect(markup.match(/<ul/g)).toHaveLength(5);
         expect(markup.match(/<ol/g)).toHaveLength(2);
     });
 });
