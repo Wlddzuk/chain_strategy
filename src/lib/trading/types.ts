@@ -81,7 +81,6 @@ export interface ChainSignal {
   hasRsiDivergence: boolean;
   divergence?: RsiDivergence;
   higherTimeframe?: Timeframe;
-  trend4h?: 'UP' | 'DOWN' | 'FLAT'; // 4h trend when the break confirmed
   triggerCandleTime?: number;
   createdAt: number;
   expiresAt: number;

@@ -137,22 +137,6 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
                             updateCandles(coin, '1h', higherCandles);
                         }
 
-                        // The 4h trend filter needs 4h candles for every market. The
-                        // trend only moves when a 4h candle closes, so refetch then.
-                        const trendData = useTradingStore.getState().candleData[coin]?.['4h'];
-                        if (
-                            timeframe !== '4h' &&
-                            !(trendData?.candles.length && trendData.lastUpdate >= getEligibleScanBoundary(now, '4h'))
-                        ) {
-                            const trendKey = `${coin}:4h`;
-                            let trendCandles = snapshotCache.get(trendKey);
-                            if (!trendCandles) {
-                                trendCandles = await rateLimitedSnapshot(coin, '4h', now);
-                                snapshotCache.set(trendKey, trendCandles);
-                            }
-                            updateCandles(coin, '4h', trendCandles);
-                        }
-
                         scanMarket(coin, timeframe);
                         attemptedBoundaries.set(key, boundary);
                         retryAfter.delete(key);
