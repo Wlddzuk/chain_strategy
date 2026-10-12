@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
 import { dedupeNewSignalAlerts } from '../lib/alerts/alert-log';
+import type { AssetContext } from '../lib/api/hyperliquid-client';
 import {
     buildTradeAlertEvent,
     emitTradeAlert,
@@ -49,6 +50,8 @@ export interface TradingSettings {
     approachThresholdPercent: number;
     minStopDistancePercent: number;
     maxRiskRewardRatio: number;
+    /** Warn when the last 24 hours lose this many R. Zero turns the warning off. */
+    dailyLossLimitR: number;
     makerFeePercent: number;
     takerFeePercent: number;
     farFromEntryPercent: number;
@@ -88,6 +91,8 @@ interface TradingState {
     // Current prices
     prices: Record<string, number>;
     sizeDecimals: Record<string, number>;
+    /** Funding, open interest, and 24h volume per coin. Refreshed in the background, never saved. */
+    marketContext: Record<string, AssetContext>;
 
     // User settings
     settings: TradingSettings;
@@ -120,6 +125,7 @@ interface TradingState {
     updatePrice: (coin: string, price: number) => void;
     updatePrices: (prices: Record<string, number>) => void;
     setSizeDecimals: (sizeDecimals: Record<string, number>) => void;
+    setMarketContext: (marketContext: Record<string, AssetContext>) => void;
 
     scanMarket: (coin: string, timeframe: Timeframe) => void;
     runScan: () => void;
@@ -170,6 +176,7 @@ const initialSettings: TradingSettings = {
     approachThresholdPercent: 0.25,
     minStopDistancePercent: MIN_STOP_DISTANCE_FLOOR_PERCENT,
     maxRiskRewardRatio: 8,
+    dailyLossLimitR: 3,
     ...HYPERLIQUID_BASE_FEES,
     farFromEntryPercent: 3,
     scanTimeframes: ['1h'],
@@ -423,6 +430,7 @@ export const useTradingStore = create<TradingState>()(
             outcomeHistory: [],
             prices: {},
             sizeDecimals: {},
+            marketContext: {},
             settings: initialSettings,
             isScanning: false,
             lastScanTime: null,
@@ -445,6 +453,7 @@ export const useTradingStore = create<TradingState>()(
             setAvailableCoins: (coins) => set({ availableCoins: coins }),
 
             setSizeDecimals: (sizeDecimals) => set({ sizeDecimals }),
+            setMarketContext: (marketContext) => set({ marketContext }),
 
             updateCandles: (coin, timeframe, candles) => {
                 set((state) => ({
@@ -959,6 +968,7 @@ export const useTradingStore = create<TradingState>()(
                     outcomeHistory: [],
                     prices: {},
                     sizeDecimals: {},
+                    marketContext: {},
                     plottedSignal: null,
                     selectedSignalId: null,
                     isScanning: false,

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import {
     getAllMids,
+    getAssetContexts,
     getCandleSnapshot,
     getSizeDecimals,
 } from '@/lib/api/hyperliquid-client';
@@ -29,6 +30,7 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
     const updateCandles = useTradingStore((state) => state.updateCandles);
     const updatePrices = useTradingStore((state) => state.updatePrices);
     const setSizeDecimals = useTradingStore((state) => state.setSizeDecimals);
+    const setMarketContext = useTradingStore((state) => state.setMarketContext);
     const scanMarket = useTradingStore((state) => state.scanMarket);
     const attemptedBoundariesRef = useRef(new Map<string, number>());
     const retryAfterRef = useRef(new Map<string, number>());
@@ -53,6 +55,31 @@ export default function MarketRuntime({ enabled }: MarketRuntimeProps) {
             controller.abort();
         };
     }, [setSizeDecimals]);
+
+    // Funding moves hourly and volume slowly, so a refresh every five minutes is plenty.
+    useEffect(() => {
+        if (!enabled) return;
+
+        let cancelled = false;
+        const controller = new AbortController();
+        const refresh = () => {
+            void getAssetContexts(controller.signal)
+                .then((contexts) => {
+                    if (!cancelled) setMarketContext(contexts);
+                })
+                .catch(() => {
+                    // Signal cards simply omit funding and volume until the next refresh.
+                });
+        };
+        refresh();
+        const interval = setInterval(refresh, 5 * 60 * 1000);
+
+        return () => {
+            cancelled = true;
+            controller.abort();
+            clearInterval(interval);
+        };
+    }, [enabled, setMarketContext]);
 
     useEffect(() => {
         if (!enabled) return;

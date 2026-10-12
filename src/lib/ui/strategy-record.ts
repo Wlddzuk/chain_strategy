@@ -14,7 +14,7 @@ export const LOW_SAMPLE_WARNING = 'Too little data to judge — let the scanner 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type OutcomeHistoryResult = SignalOutcome | 'MISSED';
-export type StrategyRecordWindow = '7d' | '30d' | 'all';
+export type StrategyRecordWindow = '24h' | '7d' | '30d' | 'all';
 
 export interface OutcomeHistoryItem {
     signalId: string;
@@ -189,11 +189,13 @@ export function getStrategyRecordWarning(resolved: number): string | null {
 }
 
 function getWindowCutoff(recordWindow: StrategyRecordWindow, now: number): number {
-    const windowMs = recordWindow === '7d'
-        ? 7 * DAY_MS
-        : recordWindow === '30d'
-            ? 30 * DAY_MS
-            : Number.POSITIVE_INFINITY;
+    const windowMs = recordWindow === '24h'
+        ? DAY_MS
+        : recordWindow === '7d'
+            ? 7 * DAY_MS
+            : recordWindow === '30d'
+                ? 30 * DAY_MS
+                : Number.POSITIVE_INFINITY;
     return Number.isFinite(now) && Number.isFinite(windowMs)
         ? now - windowMs
         : Number.NEGATIVE_INFINITY;
@@ -341,5 +343,29 @@ export function calculateMissedPlanStats(
         medianMissedByR: gaps.length === 0
             ? null
             : gaps.length % 2 === 1 ? gaps[middle] : (gaps[middle - 1] + gaps[middle]) / 2,
+    };
+}
+
+export interface DailyLossStatus {
+    /** R after fees over the last 24 hours (before fees when no stop sizes are saved). */
+    netR: number;
+    breached: boolean;
+}
+
+/**
+ * Circuit breaker: has the strategy lost at least `limitR` in the last 24 hours?
+ * A limit of zero or less switches the check off.
+ */
+export function getDailyLossStatus(
+    history: readonly OutcomeHistoryItem[],
+    now: number,
+    limitR: number,
+    fees: FeeRates = HYPERLIQUID_BASE_FEES
+): DailyLossStatus {
+    const record = calculateStrategyRecord(history, '24h', now, fees);
+    const netR = record.netR ?? record.grossR;
+    return {
+        netR,
+        breached: Number.isFinite(limitR) && limitR > 0 && netR <= -limitR,
     };
 }

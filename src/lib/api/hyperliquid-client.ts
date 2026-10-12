@@ -155,6 +155,60 @@ export async function getSizeDecimals(signal?: AbortSignal): Promise<Record<stri
     return parseSizeDecimals(await fetchExchangeMeta(signal));
 }
 
+export interface AssetContext {
+    /** Funding for the current hour as a percent of position value. Positive: longs pay shorts. */
+    fundingRatePercent: number;
+    openInterestUsd: number;
+    dayVolumeUsd: number;
+}
+
+export function parseAssetContexts(data: unknown): Record<string, AssetContext> {
+    const meta: unknown = Array.isArray(data) ? data[0] : undefined;
+    const contexts: unknown = Array.isArray(data) ? data[1] : undefined;
+    if (
+        typeof meta !== 'object' ||
+        meta === null ||
+        !('universe' in meta) ||
+        !Array.isArray(meta.universe) ||
+        !Array.isArray(contexts)
+    ) {
+        throw new Error('Hyperliquid returned invalid asset contexts');
+    }
+
+    const result: Record<string, AssetContext> = {};
+    meta.universe.forEach((asset: unknown, index: number) => {
+        const context: unknown = contexts[index];
+        if (
+            typeof asset !== 'object' || asset === null || !('name' in asset) ||
+            typeof asset.name !== 'string' ||
+            typeof context !== 'object' || context === null
+        ) {
+            return;
+        }
+
+        const read = (key: string) => Number((context as Record<string, unknown>)[key]);
+        const funding = read('funding');
+        const openInterest = read('openInterest');
+        const markPrice = read('markPx');
+        const dayVolumeUsd = read('dayNtlVlm');
+        if (![funding, openInterest, markPrice, dayVolumeUsd].every(Number.isFinite)) return;
+
+        result[asset.name] = {
+            fundingRatePercent: funding * 100,
+            openInterestUsd: openInterest * markPrice,
+            dayVolumeUsd,
+        };
+    });
+    return result;
+}
+
+/**
+ * Fetch funding, open interest, and 24h volume for every perp
+ */
+export async function getAssetContexts(signal?: AbortSignal): Promise<Record<string, AssetContext>> {
+    return parseAssetContexts(await requestInfo({ type: 'metaAndAssetCtxs' }, signal));
+}
+
 /**
  * Fetch user account state (positions, margin, etc.)
  */

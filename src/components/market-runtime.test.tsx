@@ -2,11 +2,11 @@
 import { createElement } from 'react';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { getAllMids, getCandleSnapshot, getSizeDecimals } from '@/lib/api/hyperliquid-client';
+import { getAllMids, getAssetContexts, getCandleSnapshot, getSizeDecimals } from '@/lib/api/hyperliquid-client';
 import { useTradingStore } from '@/store/trading-store';
 import MarketRuntime from './market-runtime';
 
-vi.mock('@/lib/api/hyperliquid-client', () => ({ getAllMids: vi.fn(), getCandleSnapshot: vi.fn(), getSizeDecimals: vi.fn() }));
+vi.mock('@/lib/api/hyperliquid-client', () => ({ getAllMids: vi.fn(), getAssetContexts: vi.fn(), getCandleSnapshot: vi.fn(), getSizeDecimals: vi.fn() }));
 const initial = useTradingStore.getState();
 beforeEach(() => {
     vi.useFakeTimers();
@@ -16,6 +16,7 @@ beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     useTradingStore.setState({ ...initial, availableCoins: ['BTC'], selectedCoin: 'BTC', selectedTimeframe: '1h', sizeDecimals: { BTC: 5 } });
     vi.mocked(getAllMids).mockResolvedValue({});
+    vi.mocked(getAssetContexts).mockResolvedValue({});
     vi.mocked(getSizeDecimals).mockResolvedValue({ BTC: 5 });
 });
 afterEach(() => { cleanup(); vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); useTradingStore.setState(initial); });

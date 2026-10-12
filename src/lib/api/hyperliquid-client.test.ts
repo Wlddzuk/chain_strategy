@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     getSizeDecimals,
     getCandleSnapshot,
+    parseAssetContexts,
     parseSizeDecimals,
 } from './hyperliquid-client';
 
@@ -64,5 +65,25 @@ describe('Hyperliquid size decimals', () => {
         expect(() => parseSizeDecimals({ universe: null })).toThrow(
             'Hyperliquid returned invalid exchange metadata'
         );
+    });
+});
+
+describe('Hyperliquid asset contexts', () => {
+    it('pairs each asset with its funding, open interest in dollars, and 24h volume', () => {
+        expect(parseAssetContexts([
+            { universe: [{ name: 'BTC' }, { name: 'ETH' }, { name: 'BAD' }] },
+            [
+                { funding: '0.0000125', openInterest: '1000', markPx: '80000', dayNtlVlm: '2500000000' },
+                { funding: '-0.00002', openInterest: '5000', markPx: '2500', dayNtlVlm: '900000000' },
+                { funding: 'oops', openInterest: '1', markPx: '1', dayNtlVlm: '1' },
+            ],
+        ])).toEqual({
+            BTC: { fundingRatePercent: expect.closeTo(0.00125), openInterestUsd: 80_000_000, dayVolumeUsd: 2_500_000_000 },
+            ETH: { fundingRatePercent: expect.closeTo(-0.002), openInterestUsd: 12_500_000, dayVolumeUsd: 900_000_000 },
+        });
+    });
+
+    it('rejects a response that is not the meta-and-contexts pair', () => {
+        expect(() => parseAssetContexts({ universe: [] })).toThrow('invalid asset contexts');
     });
 });
