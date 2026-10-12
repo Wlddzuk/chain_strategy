@@ -229,3 +229,19 @@ describe('zone age', () => {
         expect(later.invalidatedSignals).toHaveLength(1);
     });
 });
+
+describe('entry offset', () => {
+    it('moves a long entry above the origin zone and keeps the stop where it was', () => {
+        const options = { minStopDistancePercent: 0, maxRiskRewardRatio: 100 };
+        const baseline = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, options).newSignals[0];
+        const shallow = scanForSignals(validLongSetup(), 'BTC', '1h', undefined, {
+            ...options, entryOffsetPercent: 1,
+        }).newSignals[0];
+
+        expect(shallow.entryPrice).toBeCloseTo(baseline.entryPrice * 1.01);
+        expect(shallow.stopLoss).toBe(baseline.stopLoss);
+        expect(shallow.takeProfit).toBe(baseline.takeProfit);
+        // More risk and less reward, so the ratio drops.
+        expect(shallow.riskRewardRatio).toBeLessThan(baseline.riskRewardRatio);
+    });
+});

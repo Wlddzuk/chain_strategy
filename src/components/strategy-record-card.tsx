@@ -35,10 +35,17 @@ const BREAKDOWN_DIMENSIONS: ReadonlyArray<{
 interface StrategyRecordCardProps {
     history: readonly OutcomeHistoryItem[];
     now?: number;
+    title?: string;
+    defaultWindow?: StrategyRecordWindow;
 }
 
-export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
-    const [recordWindow, setRecordWindow] = useState<StrategyRecordWindow>('30d');
+export function StrategyRecordCard({
+    history,
+    now,
+    title = 'Strategy record',
+    defaultWindow = '30d',
+}: StrategyRecordCardProps) {
+    const [recordWindow, setRecordWindow] = useState<StrategyRecordWindow>(defaultWindow);
     const [breakdownDimension, setBreakdownDimension] = useState<StrategyBreakdownDimension>('timeframe');
     const [clientNow, setClientNow] = useState(0);
 
@@ -85,7 +92,7 @@ export function StrategyRecordCard({ history, now }: StrategyRecordCardProps) {
         <section className="card" aria-labelledby="strategy-record-title">
             <div className="flex items-center justify-between gap-3">
                 <h3 id="strategy-record-title" className="text-sm font-semibold">
-                    Strategy record
+                    {title}
                 </h3>
                 <div className="flex rounded-lg border border-[var(--card-border)] p-0.5" aria-label="Strategy record window">
                     {RECORD_WINDOWS.map((option) => (
