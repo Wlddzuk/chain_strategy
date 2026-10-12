@@ -11,6 +11,7 @@ export const GLOSSARY_ITEMS = [
     ['Stop', 'Also called stop loss: the price that closes the plan to limit a loss.'],
     ['Target', 'Also called take profit: the price that closes the plan in profit.'],
     ['R:R', 'Risk to reward: how much the plan may gain for each 1R risked.'],
+    ['Funding', 'An hourly payment between longs and shorts on Hyperliquid. When it is positive, longs pay shorts; when negative, shorts pay longs.'],
     ['R after fees', "A result in R once Hyperliquid's fees are taken off: the maker fee on the entry and target, the taker fee on the stop."],
     ['Missed', 'Price reached the target before it came back to entry, so the plan is too late.'],
     ['Near miss', 'A missed plan where price came within 0.25R of the entry before running to the target.'],

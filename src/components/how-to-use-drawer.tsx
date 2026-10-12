@@ -210,6 +210,18 @@ export function HowToUseDrawer({ open, onClose }: HowToUseDrawerProps) {
                             <li>
                                 <strong>Right-hand tabs</strong>: switch between four views instead of scrolling. <strong>Signals</strong> are the active plans — each card leads with a colored status strip, the only thing you need to read at a glance. <strong>Forming</strong> is early warnings: price is near a zone, nothing confirmed yet, watch don&apos;t act; each row is colored by the trade it would lead to, green for a long and red for a short. <strong>Record</strong> is the tool&apos;s own scoreboard of how its plans would have performed, in R after fees, split by timeframe, coin, and direction — check it weekly. <strong>History</strong> is finished plans, with filters and the R each one made after fees.
                             </li>
+                            <li>
+                                <strong>Daily loss warning</strong>: a red notice above the tabs when the strategy&apos;s plans have lost your daily limit (3R unless you change it in Settings) within 24 hours. Stand aside until it clears.
+                            </li>
+                            <li>
+                                <strong>Funding and volume</strong> (on each signal card): funding is what holding the trade costs or earns you per day, shown in R. Thin 24h volume means worse fills.
+                            </li>
+                            <li>
+                                <strong>Backtest</strong> (flask button in the header): replays the scanner over past Hyperliquid candles in a new tab, so you can see how the plans would have done over months instead of waiting for live results.
+                            </li>
+                            <li>
+                                <strong>Range strategy</strong> (up-down arrows button in the header): a separate page for a second strategy. It marks a range between a swing high and the swing low that answers it, shorts just under the high, buys just above the low, and shows how that would have done. It plans only, with no alerts yet.
+                            </li>
                         </ul>
                     </section>
 
