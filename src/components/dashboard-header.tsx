@@ -1,6 +1,6 @@
 'use client';
 
-import { Link2, Settings2 } from 'lucide-react';
+import { ArrowDownUp, FlaskConical, Link2, Settings2 } from 'lucide-react';
 import AlertCenter from '@/components/alert-center';
 import CoinSelector from '@/components/coin-selector';
 import { HowToUseLauncher } from '@/components/how-to-use-launcher';
@@ -44,6 +44,27 @@ export function DashboardHeader({
                         <TimeframeToggle />
                         <AlertCenter />
                         <HowToUseLauncher />
+                        {/* A new tab keeps this one scanning and alerting while the replay runs. */}
+                        <a
+                            href="/backtest"
+                            target="_blank"
+                            rel="noopener"
+                            aria-label="Backtest the strategy (opens in a new tab)"
+                            title="Backtest the strategy"
+                            className="btn btn-outline px-3"
+                        >
+                            <FlaskConical aria-hidden="true" size={18} strokeWidth={2} />
+                        </a>
+                        <a
+                            href="/range"
+                            target="_blank"
+                            rel="noopener"
+                            aria-label="Range strategy (opens in a new tab)"
+                            title="Range strategy"
+                            className="btn btn-outline px-3"
+                        >
+                            <ArrowDownUp aria-hidden="true" size={18} strokeWidth={2} />
+                        </a>
                         <button
                             type="button"
                             aria-label="Settings"

@@ -14,6 +14,10 @@ Chain Trader watches 8 crypto markets on Hyperliquid and looks for one specific 
 - **Stats row**: current price with a small chart of the last 48 candles, number of active plans with the all-time strategy record underneath (tap it to open the Record tab), your risk settings, connection health, scanner status.
 - **Chart**: candles plus the zones the strategy found. Toggle RSI, Bollinger Bands, EMAs with the toolbar buttons.
 - **Right-hand tabs**: switch between four views instead of scrolling. **Signals** are the active plans — each card leads with a colored status strip, the only thing you need to read at a glance. **Forming** is early warnings: price is near a zone, nothing confirmed yet, watch don't act; each row is colored by the trade it would lead to, green for a long and red for a short. **Record** is the tool's own scoreboard of how its plans would have performed, in R after fees, split by timeframe, coin, and direction — check it weekly. **History** is finished plans, with filters and the R each one made after fees.
+- **Daily loss warning**: a red notice above the tabs when the strategy's plans have lost your daily limit (3R unless you change it in Settings) within 24 hours. Stand aside until it clears.
+- **Funding and volume** (on each signal card): funding is what holding the trade costs or earns you per day, shown in R. Thin 24h volume means worse fills.
+- **Backtest** (flask button in the header): replays the scanner over past Hyperliquid candles in a new tab, so you can see how the plans would have done over months instead of waiting for live results.
+- **Range strategy** (up-down arrows button in the header): a separate page for a second strategy. It marks a range between a swing high and the swing low that answers it, shorts just under the high, buys just above the low, and shows how that would have done. It plans only, with no alerts yet.
 
 ## What the status strips mean
 
@@ -77,6 +81,7 @@ You can change the minimum stop and the maximum R:R in Settings, under Setup fil
 - **Stop** — Also called stop loss: the price that closes the plan to limit a loss.
 - **Target** — Also called take profit: the price that closes the plan in profit.
 - **R:R** — Risk to reward: how much the plan may gain for each 1R risked.
+- **Funding** — An hourly payment between longs and shorts on Hyperliquid. When it is positive, longs pay shorts; when negative, shorts pay longs.
 - **R after fees** — A result in R once Hyperliquid's fees are taken off: the maker fee on the entry and target, the taker fee on the stop.
 - **Missed** — Price reached the target before it came back to entry, so the plan is too late.
 - **Near miss** — A missed plan where price came within 0.25R of the entry before running to the target.
