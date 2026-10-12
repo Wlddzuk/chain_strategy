@@ -47,6 +47,14 @@ export interface ScanOptions {
     minRiskReward?: number;
     minStopDistancePercent?: number;
     maxRiskRewardRatio?: number;
+    /**
+     * Moves the entry this percent of price out of the origin zone, toward where
+     * price is coming from, so shallow retraces still fill. Backtest experiments
+     * only; the live scanner leaves it at zero.
+     */
+    entryOffsetPercent?: number;
+    /** Clock for expiry and zone age. Defaults to the wall clock; a backtest passes each candle's close. */
+    now?: number;
 }
 
 export interface ScanResult {
@@ -101,7 +109,7 @@ export function scanForSignals(
     state.zones = rebaseZones(state.zones);
     state.events = rebaseZones(state.events);
 
-    const now = Date.now();
+    const now = options?.now ?? Date.now();
     const minRiskReward = options?.minRiskReward ?? DEFAULT_MIN_RISK_REWARD;
     const minStopDistancePercent = options?.minStopDistancePercent ?? DEFAULT_MIN_STOP_DISTANCE_PERCENT;
     const maxRiskRewardRatio = options?.maxRiskRewardRatio ?? DEFAULT_MAX_RISK_REWARD;
@@ -238,7 +246,8 @@ export function scanForSignals(
                 }
             }
 
-            const entryPrice = originZone.proximalLine;
+            const entryOffset = (options?.entryOffsetPercent ?? 0) / 100;
+            const entryPrice = originZone.proximalLine * (1 + (direction === 'LONG' ? entryOffset : -entryOffset));
             const stopLoss = direction === 'LONG'
                 ? originZone.distalLine * 0.999
                 : originZone.distalLine * 1.001;
