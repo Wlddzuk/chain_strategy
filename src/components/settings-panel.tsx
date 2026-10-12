@@ -39,6 +39,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         approachThresholdPercent: settings.approachThresholdPercent,
         minStopDistancePercent: settings.minStopDistancePercent,
         maxRiskRewardRatio: settings.maxRiskRewardRatio,
+        dailyLossLimitR: settings.dailyLossLimitR,
         makerFeePercent: settings.makerFeePercent,
         takerFeePercent: settings.takerFeePercent,
         farFromEntryPercent: settings.farFromEntryPercent,
@@ -60,6 +61,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         localSettings.minStopDistancePercent <= 25 &&
         localSettings.maxRiskRewardRatio >= 2 &&
         localSettings.maxRiskRewardRatio <= 100 &&
+        localSettings.dailyLossLimitR >= 0 &&
+        localSettings.dailyLossLimitR <= 100 &&
         localSettings.makerFeePercent >= 0 &&
         localSettings.makerFeePercent <= 1 &&
         localSettings.takerFeePercent >= 0 &&
@@ -333,6 +336,29 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 step={0.5}
                                 className="input w-full"
                             />
+                        </div>
+
+                        <div>
+                            <label htmlFor="settings-daily-loss" className="block text-sm font-medium mb-2">
+                                Daily loss limit (R)
+                            </label>
+                            <input
+                                id="settings-daily-loss"
+                                type="number"
+                                value={localSettings.dailyLossLimitR}
+                                onChange={(event) => setLocalSettings((current) => ({
+                                    ...current,
+                                    dailyLossLimitR: parseFloat(event.target.value) || 0,
+                                }))}
+                                min={0}
+                                max={100}
+                                step={0.5}
+                                className="input w-full"
+                            />
+                            <p className="text-xs text-[var(--text-muted)] mt-1">
+                                Shows a stand-aside warning when the strategy&apos;s plans lose this much, after fees,
+                                within 24 hours. Set 0 to turn it off.
+                            </p>
                         </div>
 
                         <div>

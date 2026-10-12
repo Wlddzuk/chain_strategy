@@ -21,6 +21,7 @@ import {
     type HistoryFilter,
 } from '@/lib/ui/signal-history';
 import { getChartScopeEmptyState } from '@/lib/ui/signals-panel-copy';
+import { getDailyLossStatus } from '@/lib/ui/strategy-record';
 import { sortActiveSignalsByActionability } from '@/lib/ui/trade-metrics';
 import { getTradePlanKey } from '@/lib/trading/signal-identity';
 import {
@@ -56,6 +57,7 @@ export default function SignalsPanel() {
     const strategyStates = useTradingStore((state) => state.strategyStates);
     const makerFeePercent = useTradingStore((state) => state.settings.makerFeePercent);
     const takerFeePercent = useTradingStore((state) => state.settings.takerFeePercent);
+    const dailyLossLimitR = useTradingStore((state) => state.settings.dailyLossLimitR);
     const [now, setNow] = useState(0);
     const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
 
@@ -111,6 +113,12 @@ export default function SignalsPanel() {
         () => deriveFormingSetups(strategyStates, prices),
         [prices, strategyStates]
     );
+    const dailyLoss = useMemo(
+        () => now > 0
+            ? getDailyLossStatus(outcomeHistory, now, dailyLossLimitR, { makerFeePercent, takerFeePercent })
+            : null,
+        [dailyLossLimitR, makerFeePercent, now, outcomeHistory, takerFeePercent]
+    );
     const tabs: ReadonlyArray<{ value: SidebarTab; label: string; count?: number }> = [
         { value: 'signals', label: 'Signals', count: activeSignals.length },
         { value: 'forming', label: 'Forming', count: formingSetups.length },
@@ -142,6 +150,17 @@ export default function SignalsPanel() {
                     </button>
                 </div>
             </div>
+
+            {dailyLoss?.breached && (
+                <p
+                    role="alert"
+                    className="rounded-lg border border-[var(--short-red)]/50 bg-[var(--short-red)]/10 px-3 py-2 text-xs leading-relaxed text-red-100"
+                >
+                    <strong>Daily loss limit reached.</strong> The strategy&apos;s plans are down{' '}
+                    {Math.abs(dailyLoss.netR).toFixed(1)}R after fees in the last 24 hours, past your {dailyLossLimitR}R limit.
+                    Stand aside until that recovers.
+                </p>
+            )}
 
             <SegmentedControl
                 label="Signals sidebar"

@@ -6,6 +6,7 @@ import {
     calculateMissedPlanStats,
     calculateStrategyBreakdown,
     calculateStrategyRecord,
+    getDailyLossStatus,
     getStrategyRecordWarning,
     hasEnoughResolvedPlansForPercentage,
     LOW_SAMPLE_WARNING,
@@ -279,5 +280,35 @@ describe('missed plan tracking', () => {
         expect(calculateMissedPlanStats([], 'all', NOW)).toEqual({
             missed: 0, tracked: 0, nearMisses: 0, medianMissedByR: null,
         });
+    });
+});
+
+describe('getDailyLossStatus', () => {
+    const noFees = { makerFeePercent: 0, takerFeePercent: 0 };
+    const priced = (id: string, outcome: 'WIN' | 'LOSS', closedAt: number, rMultiple?: number): OutcomeHistoryItem => ({
+        ...historyItem(id, outcome, closedAt, rMultiple),
+        stopDistancePercent: 1,
+    });
+    const history = [
+        priced('a', 'LOSS', NOW - 2 * 60 * 60 * 1000),
+        priced('b', 'LOSS', NOW - 5 * 60 * 60 * 1000),
+        priced('c', 'LOSS', NOW - 23 * 60 * 60 * 1000),
+        priced('yesterday-win', 'WIN', NOW - 30 * 60 * 60 * 1000, 5),
+    ];
+
+    it('trips when the last 24 hours lose at least the limit, ignoring older trades', () => {
+        expect(getDailyLossStatus(history, NOW, 3, noFees)).toEqual({ netR: -3, breached: true });
+        expect(getDailyLossStatus(history, NOW, 4, noFees).breached).toBe(false);
+    });
+
+    it('counts fees toward the limit', () => {
+        // Three losses on a 1% stop: 3R plus 3 x 0.06R of fees.
+        const status = getDailyLossStatus(history.slice(0, 3), NOW, 3.1, { makerFeePercent: 0.015, takerFeePercent: 0.045 });
+        expect(status.netR).toBeCloseTo(-3.18);
+        expect(status.breached).toBe(true);
+    });
+
+    it('is off when the limit is zero', () => {
+        expect(getDailyLossStatus(history, NOW, 0, noFees).breached).toBe(false);
     });
 });

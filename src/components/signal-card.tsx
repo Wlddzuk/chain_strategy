@@ -11,6 +11,7 @@ import { focusStrategyChart } from '@/lib/ui/focus-chart';
 import { getRoundedQuantity } from '@/lib/ui/format-quantity';
 import { formatPrice } from '@/lib/ui/format-price';
 import { getOpenPlanButtonState } from '@/lib/ui/trade-plan-actions';
+import { formatCompactUsd, getFundingImpact } from '@/lib/ui/market-context';
 import {
     calculateNetRiskReward,
     isPositionSizingUnsafe,
@@ -36,6 +37,7 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
     const farFromEntryPercent = useTradingStore((state) => state.settings.farFromEntryPercent);
     const approachThresholdPercent = useTradingStore((state) => state.settings.approachThresholdPercent);
     const sizeDecimals = useTradingStore((state) => state.sizeDecimals[signal.coin]);
+    const marketContext = useTradingStore((state) => state.marketContext[signal.coin]);
     // A once-per-minute parent tick refreshes this display. Lifecycle checks still
     // run on every price update inside the store without re-rendering the card.
     const currentPrice = useTradingStore.getState().prices[signal.coin] ?? 0;
@@ -73,6 +75,9 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
         signal.takeProfit,
         { makerFeePercent, takerFeePercent }
     );
+    const fundingImpact = marketContext
+        ? getFundingImpact(signal, marketContext.fundingRatePercent)
+        : null;
     const absoluteDistanceToEntry = Math.abs(moveToEntryPercent);
     const isFarFromEntry = signal.status !== 'TOUCHED' &&
         Number.isFinite(absoluteDistanceToEntry) &&
@@ -170,6 +175,24 @@ export default function SignalCard({ signal, now }: SignalCardProps) {
                         : `${distanceToEntry > 0 ? '+' : distanceToEntry < 0 ? '−' : ''}${Math.abs(distanceToEntry).toFixed(2)}%`}
                 />
             </dl>
+
+            {marketContext && fundingImpact && (
+                <dl className="mb-4 grid grid-cols-2 gap-3 text-sm" aria-label="Market context">
+                    <Metric
+                        label="Funding"
+                        value={`${marketContext.fundingRatePercent >= 0 ? '+' : '−'}${Math.abs(marketContext.fundingRatePercent).toFixed(4)}%/h`}
+                        detail={fundingImpact.dailyR < 0.005
+                            ? 'negligible for this plan'
+                            : `${fundingImpact.pays ? 'costs' : 'earns'} you ≈ ${fundingImpact.dailyR.toFixed(2)}R a day held`}
+                        detailClassName={fundingImpact.pays && fundingImpact.dailyR >= 0.1 ? 'text-amber-300' : ''}
+                    />
+                    <Metric
+                        label="24h volume"
+                        value={formatCompactUsd(marketContext.dayVolumeUsd)}
+                        detail={`open interest ${formatCompactUsd(marketContext.openInterestUsd)}`}
+                    />
+                </dl>
+            )}
 
             {signal.partialTakeProfit && (
                 <div className="mb-4 border-l-2 border-[var(--long-green)] pl-3">
